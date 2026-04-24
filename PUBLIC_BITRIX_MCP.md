@@ -593,59 +593,20 @@ touch "$LAST_RUN"
 
 ## Примеры подключения
 
-### PhpStorm (`/.ai/mcp/mcp.json`)
+### PhpStorm (`/.ai/mcp/mcp.json`) / Cursor (`mcp.json`) / Claude Desktop
 
 ```json
 {
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": ["-y", "mcp-remote@0.1.26", "https://bxmcp.camouf.ru"]
+      "args": ["-y", "mcp-remote@0.1.26", "--transport", "sse-only", "https://bxmcp.camouf.ru"]
     }
   }
 }
 ```
 
-### Cursor (`mcp.json`)
-
-```json
-{
-  "mcpServers": {
-    "bitrix": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote@0.1.26", "https://bxmcp.camouf.ru"]
-    }
-  }
-}
-```
-
-### Claude Desktop
-
-```json
-{
-  "mcpServers": {
-    "bitrix": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote@0.1.26", "https://bxmcp.camouf.ru"]
-    }
-  }
-}
-```
-
-**Вариант для обратной совместимости** (через основной домен):
-
-```json
-{
-  "mcpServers": {
-    "bitrix": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote@0.1.26", "https://camouf.ru/mcp"]
-    }
-  }
-}
-```
-
-**Важно:** Фиксируйте версию `mcp-remote@0.1.26`. Более новые версии (>=0.1.38) используют Streamable HTTP transport, с которым сервер несовместим.
+**Важно:** Сервер использует SSE-only transport. Флаг `--transport sse-only` обязателен — без него `mcp-remote` пытается использовать Streamable HTTP, который не поддерживается.
 
 ---
 
@@ -711,156 +672,87 @@ curl -s -X POST "https://camouf.ru/mcp/messages?sessionId=$SESSION_ID" \
 
 ---
 
-## Переход на поддомен bxmcp.camouf.ru
+## Миграция на Streamable HTTP transport
 
-### Почему решили отказаться от изначальной схемы
+### Почему
 
-Изначально MCP-сервер был спроектирован как location `/mcp/` на основном домене
-`camouf.ru`. Это работало через curl (ручные запросы к `/mcp/sse` и `/mcp/messages`),
-но оказалось **несовместимо с клиентскими MCP-библиотеками** (`mcp-remote`,
-IDE-плагины Cursor, PhpStorm, Claude Desktop).
+Streamable HTTP — новый стандарт MCP (спецификация 2025-03-26 / 2025-11-25), который заменяет старый SSE transport.
+Современные MCP-клиенты (Cursor, PhpStorm, Claude Desktop через `mcp-remote >= 0.1.38`) используют http-first стратегию:
+сначала `POST /` (Streamable HTTP), и только при неудаче падают на SSE.
 
-Проблема: `mcp-remote` и другие клиенты ожидают, что **SSE-соединение открывается
-на корне домена** (`GET /`) или на переданном URL как есть. Они не умеют добавлять
-`/mcp/` к путям. При подключении к `https://camouf.ru/mcp` клиент стучится на
-`GET /sse` и `POST /messages`, а не на `GET /mcp/sse` и `POST /mcp/messages`.
-Nginx с rewrite `/mcp/` не спасает, потому что клиент никогда не шлёт `/mcp/`
-в пути — он знает только про корень.
+Старый SSE транспорт всё ещё работает, но поддерживается только через `mcp-remote@0.1.26` с флагом `--transport sse-only`.
 
-Выделенный поддомен `bxmcp.camouf.ru` решает это:
-- Bitrix CMS висит на основном домене — ничего не меняется.
-- MCP-сервер висит на поддомене — клиенты стучатся на корень, nginx проксирует
-  прозрачно, никаких конфликтов.
-- Один порт 3100, один процесс — разница только в nginx server_name.
+### Текущий статус — ⏳ В ПРОЦЕССЕ (24.04.2026)
 
-### Текущий статус — ✅ ВЫПОЛНЕНО 24.04.2026
+**Что уже сделано:**
+- SDK обновлён до `@modelcontextprotocol/sdk@1.29.0` (на сервере)
+- Типы `StreamableHTTPServerTransport` импортируются и компилируются
+- Транспорт создаётся с `sessionIdGenerator: () => crypto.randomUUID()`
+- Настроен `POST /` → `streamableTransport.handleRequest(req, res, req.body)`
 
-DNS `bxmcp.camouf.ru` → `188.243.139.238` (применился).
-SSL-сертификат получен (Certbot, `bxmcp.camouf.ru`).
-Server block добавлен в `/etc/nginx/sites-enabled/camouf.ru.conf`.
-nginx перезагружен, всё работает.
+**Что сломано и нужно починить:**
 
-**Проверка:**
-```bash
-curl -s -N https://bxmcp.camouf.ru/sse
-# → event: endpoint, data: /messages?sessionId=...
+1. **server.connect(transport) вызывается слишком рано**
+   Текущая проблема: `Server` из SDK (import { Server } from "...") при `connect()` сразу делает initialize. А `StreamableHTTPServerTransport.handleRequest()` тоже пытается инициализировать при первом POST-запросе. Возникает "Server already initialized".
 
-# Инструменты:
-curl ... tools/call {"name":"liveApiListModules","arguments":{}} → 53 модуля
-curl ... tools/call {"name":"searchDocs","arguments":{"query":"права доступа"}} → результаты
-curl ... tools/call {"name":"envInfo","arguments":{}} → информация об окружении
-curl https://bxmcp.camouf.ru/health → {"status":"ok"}
-```
+   Решение: не вызывать `server.connect(streamableTransport)` заранее. Вместо этого:
+   - Установить `streamableTransport.onmessage`, `onclose`, `onerror`
+   - Внутри `onmessage` передавать сообщения в `(server as any)._server.handleMessage()`
+   - Либо найти способ передать server в transport без connect()
 
-Исправлен баг: `express.json()` глобально парсил тело запроса, что ломало `raw-body` в SSEServerTransport. Убран для `/messages`.
+2. **mcp-remote@0.1.38 не может подключиться**
+   Ошибка: `StreamableHTTPError: Error POSTing to endpoint: SSE connection not established`
+   Причина: `mcp-remote` шлёт `initialize` на `POST /`, сервер отвечает SSE event'ом, но `mcp-remote` ждёт JSON-RPC ответ в теле.
 
-**Подключение клиентов:**
+   Последний тест (с чистым Streamable HTTP и отключённым SSE):
+   ```
+   INIT: {"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request: Server already initialized"}}
+   ```
+   Проблема та же — двойная инициализация.
 
-> **Важно:** Используйте `mcp-remote@0.1.26`. Более новые версии (>=0.1.38) используют Streamable HTTP transport, который сервер пока не поддерживает.
+3. **npm install -g mcp-remote@0.1.38** на клиенте (macOS) — обновлено, но не помогает,
+   т.к. сервер не отвечает корректно на Streamable HTTP.
+
+**Что НЕ сломано и должно остаться:**
+- `GET /health` → `{"status":"ok"}`
+- `POST /admin/reindex` и `/admin/reindex-docs`
+- `GET /admin/progress`
+- SQLite с индексами 53 модулей
+- Embeddings-сервис на Python
+
+**План дальнейших действий:**
+1. Разобраться с API SDK 1.29.0: как подключить `Server` к `StreamableHTTPServerTransport` без двойной инициализации
+2. Проверить через curl POST с правильными заголовками `Accept: application/json, text/event-stream`
+3. Протестировать через `mcp-remote@0.1.38` с сервера (localhost)
+4. Обновить конфиги во всех клиентах
+
+**НЕ ТРОГАТЬ, пока не заработает Streamable HTTP:**
+- `/opt/bitrix-mcp/src/index.ts` — основной файл сервера (активная разработка)
+- `/opt/bitrix-mcp/src/liveapi/indexer.ts` — чтение версий модулей (починено)
+- `/opt/bitrix-mcp/node_modules/@modelcontextprotocol/sdk/` — SDK 1.29.0 (не даунгрейдить)
+
+### Подключение клиентов (текущее, пока Streamable HTTP чинится)
+
+Временно для SSE-only (через mcp-remote@0.1.26):
 
 ```json
 {
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": ["-y", "mcp-remote@0.1.26", "https://bxmcp.camouf.ru"]
+      "args": ["-y", "mcp-remote@0.1.26", "--transport", "sse-only", "https://bxmcp.camouf.ru"]
     }
   }
 }
 ```
 
-Для обратной совместимости (через основной домен, пока не обновился DNS):
+Когда Streamable HTTP заработает, будет достаточно:
 ```json
 {
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": ["-y", "mcp-remote@0.1.26", "https://camouf.ru/mcp"]
-    }
-  }
-}
-```
-
-## Проверка сервера (SSE + SDK)
-
-### 1. Быстрая проверка через health
-```bash
-curl -s https://bxmcp.camouf.ru/health
-# → {"status":"ok"}
-```
-
-### 2. Проверка SSE handshake
-```bash
-curl -s -N https://bxmcp.camouf.ru/sse --max-time 5
-# → event: endpoint
-# → data: /messages?sessionId=<uuid>
-```
-
-### 3. Полная проверка инструментов (через MCP SDK)
-```bash
-# Установить SDK (однократно)
-npm install @modelcontextprotocol/sdk
-
-# Создать тестовый скрипт
-cat > /tmp/test_bxmcp.mjs << 'SCRIPT'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-
-const transport = new SSEClientTransport(new URL("https://bxmcp.camouf.ru/sse"));
-const client = new Client({ name: "test", version: "1.0.0" });
-await client.connect(transport);
-
-const tools = await client.listTools();
-console.log("Tools:", tools.tools.map(t => t.name));
-
-const modules = await client.callTool({ name: "liveApiListModules", arguments: {} });
-console.log("Modules:", modules.content[0].text);
-
-const env = await client.callTool({ name: "envInfo", arguments: {} });
-console.log("Env:", env.content[0].text);
-
-const search = await client.callTool({ name: "searchDocs", arguments: { query: "права доступа" } });
-console.log("Search results:", JSON.parse(search.content[0].text).results.length);
-
-await transport.close();
-SCRIPT
-
-node /tmp/test_bxmcp.mjs
-```
-
-## Подключение к Kilo
-
-### Глобальная конфигурация (`~/.config/kilo/kilo.jsonc`)
-```jsonc
-{
-  "mcp": {
-    "bxmcp": {
-      "type": "remote",
-      "url": "https://bxmcp.camouf.ru",
-      "enabled": true
-    }
-  }
-}
-```
-
-### Порядок действий после добавления в конфиг
-1. Сохранить `kilo.jsonc`
-2. **Перезапустить сессию Kilo** (выйти и зайти заново)
-3. После перезапуска проверить, что сервер появился в списке MCP:
-   - В TUI: `/mcps` — должен быть `bxmcp` со статусом ✅
-   - Или запустить `npx mcp-remote https://bxmcp.camouf.ru` и убедиться, что tools/list возвращает 9 инструментов
-4. Если сервер не отображается:
-   - Проверить, что `enabled: true`
-   - Кило должна поддерживать SSE-транспорт для remote MCP-серверов
-   - Альтернатива: добавить через `mcp-remote` как **local**:
-
-```jsonc
-{
-  "mcp": {
-    "bxmcp": {
-      "type": "local",
-      "command": ["npx", "mcp-remote", "https://bxmcp.camouf.ru"],
-      "enabled": true
+      "args": ["mcp-remote", "https://bxmcp.camouf.ru"]
     }
   }
 }
