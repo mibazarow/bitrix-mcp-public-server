@@ -4,22 +4,18 @@
 
 | Параметр | Значение |
 |----------|----------|
-| Домен | `camouf.ru` (основной, Bitrix), `bxmcp.camouf.ru` (поддомен, MCP) |
-| Сервер | VDS, Ubuntu 22.04/24.04 LTS |
+| Домен | `camouf.ru` (Bitrix), `bxmcp.camouf.ru` (MCP) |
+| Сервер | VDS, Ubuntu 22.04 |
 | Путь к Bitrix | `/home/bitrix/ext_www/camouf.ru` |
-| Версия Bitrix | Последняя стабильная (через BitrixEnv) |
-| MCP сервер | Самописный, Node.js/TypeScript |
-| Доступ | Публичный, без токенов и аутентификации |
-
+| MCP сервер | Node.js/TypeScript, порт 3100 |
+| Доступ | Публичный, без аутентификации |
+| SDK | `@modelcontextprotocol/sdk` v1.29.0 |
 
 ## Задача
 
-Создать MCP-сервер, который предоставляет AI-агентам 
-(Cursor, PhpStorm, Claude Desktop,
-Kilo и др.) справочную информацию по **Bitrix Framework**, полностью независимый от
-движка 1С-Битрикс
+MCP-сервер, предоставляющий AI-агентам (Cursor, PhpStorm, Claude Desktop, Kilo) справочную информацию по **Bitrix Framework**, полностью независимый от движка 1С-Битрикс.
 
-**Инструменты MCP:**
+**Инструменты:**
 - LiveAPI — поиск функций, классов, методов, событий, констант ядра Bitrix
 - Документация Bitrix Framework в виде MCP resources
 - Семантический поиск по документации через embeddings
@@ -28,198 +24,78 @@ Kilo и др.) справочную информацию по **Bitrix Framework
 - Полностью свой код, своя архитектура (не модуль для Bitrix)
 - Публичный — любой может подключиться без токена
 - Источник PHP-кода для LiveAPI — установленный на этом же сервере Bitrix
-- Автоматическая актуализация индексов при обновлении ядра Bitrix
 - Embeddings-сервис на Python (sentence-transformers) для семантического поиска
 
-## Зачем это нужно
-
-LLM общего назначения (Claude, GPT, DeepSeek и др.) знакомы с Bitrix Framework
-в той или иной мере, но их знания — это замороженный срез обучающей выборки:
-
-- Они **галлюцинируют**: выдумывают несуществующие методы, путают сигнатуры
-  и неймспейсы, особенно в редких модулях.
-- Они **не знают свежих изменений** — после обновления ядра модель продолжает
-  отвечать по старой версии.
-- Они **не точны в деталях**: типы аргументов, возвращаемые значения,
-  унаследованные методы — всё это модель «угадывает», а не знает.
-
-**MCP-сервер решает это через LiveAPI** — вместо того чтобы полагаться на
-«воспоминания» модели, он подставляет ей реальный PHP-код ядра прямо с сервера.
-Когда Claude или Cursor видят актуальную сигнатуру `\Bitrix\Main\ORM\Query\Query::setFilter()`
-из исходников, они перестают гадать.
-
-**Семантический поиск (RAG)** по документации делает то же самое для ответов
-на высокоуровневые вопросы: «как работают права доступа?», «как добавить
-свой обработчик события?» — модель не вспоминает, а извлекает ответ из
-актуальной документации.
-
-Итог: проект полезен, когда нужна **точность**, а не «вроде похоже».
-Для поверхностных вопросов он избыточен, для реальной разработки — нет.
-
----
-
-## Выбранный подход: Node.js/TypeScript
-
-MCP-сервер пишется на TypeScript с официальным SDK `@modelcontextprotocol/sdk`.
-
-| Компонент | Технология |
-|-----------|-----------|
-| MCP SDK | `@modelcontextprotocol/sdk` (Anthropic) |
-| PHP-парсер | `php-parser` (npm) — AST-парсер, либо regex-сканирование сигнатур |
-| Хранилище | SQLite через `better-sqlite3` |
-| Документация | git clone `github.com/bitrix-tools/framework-docs` |
-| Embeddings | Python-микросервис (FastAPI + sentence-transformers `intfloat/multilingual-e5-small`) |
-
----
-
-## Архитектура сервера
+## Архитектура
 
 ```
-┌──────────────────────────────────────────────────┐
-│                   VDS                             │
-│                                                    │
-│  ┌────────────────────────────┐                    │
-│  │  Bitrix CMS                │   источник PHP     │
-│  │  /home/bitrix/ext_www/     │   для LiveAPI      │
-│  │  camouf.ru/bitrix/  │                    │
-│  └────────────────────────────┘                    │
-│         │                                          │
-│         ▼ php-файлы модулей                        │
-│  ┌──────────────────────────────────────┐         │
-│  │  MCP Server (Node.js) — порт 3100    │         │
-│  │                                      │         │
-│  │  ┌─────────┐ ┌──────────┐ ┌───────┐ │         │
-│  │  │ LiveAPI │ │  Docs    │ │Search │ │         │
-│  │  │ Service │ │ Service  │ │Service│ │         │
-│  │  └────┬────┘ └────┬─────┘ └───┬───┘ │         │
-│  │       │           │           │      │         │
-│  │  ┌────┴───────────┴───────────┴───┐  │         │
-│  │  │  SQLite (/opt/bitrix-mcp/)     │  │         │
-│  │  └────────────────────────────────┘  │         │
-│  └──────────────────────────────────────┘         │
-│         │                                          │
-│  ┌──────┴───────────────┐  ┌────────────────────┐ │
-│  │ Docs markdown (git)  │  │ Embeddings Service │ │
-│  │ /opt/bitrix-mcp/docs │  │ Python, порт 8000  │ │
-│  └──────────────────────┘  └────────────────────┘ │
-│                                                    │
-│  ┌──────────────────────────────────────────┐     │
-│  │  nginx (прокси)                          │     │
-│  │  bxmcp.camouf.ru → localhost:3100 │     │
-│  │  (или camouf.ru/mcp)                     │     │
-│  │  camouf.ru/embed → localhost:8000 │     │
-│  └──────────────────────────────────────────┘     │
-└──────────────────────────────────────────────────┘
+VDS
+├── Bitrix CMS — источник PHP для LiveAPI
+│   └── /home/bitrix/ext_www/camouf.ru/bitrix/modules/
+│
+├── MCP Server (Node.js, порт 3100)
+│   ├── LiveAPI Service — парсинг PHP, SQLite-индекс
+│   ├── Docs Service — markdown документация (git)
+│   ├── Search Service — семантический поиск (embeddings)
+│   └── SQLite — /opt/bitrix-mcp/data/index.db
+│
+├── Embeddings Service (Python, FastAPI, порт 8000)
+│   └── sentence-transformers intfloat/multilingual-e5-small
+│
+└── nginx — прокси:
+    ├── bxmcp.camouf.ru → localhost:3100 (MCP)
+    ├── camouf.ru/mcp/ → localhost:3100 (основной домен)
+    └── camouf.ru/embed/ → localhost:8000 (embeddings)
 ```
 
-**Ключевое решение**: MCP-сервер не запускается внутри Bitrix. Он читает PHP-файлы
-непосредственно из установленного Bitrix: `/home/bitrix/ext_www/camouf.ru/bitrix/modules/`.
-Так индексы всегда соответствуют реальной версии ядра на сервере.
+**Ключевое решение**: MCP-сервер читает PHP-файлы непосредственно из установленного Bitrix. Индексы всегда соответствуют реальной версии ядра.
 
----
+## Транспорт
+
+**Streamable HTTP** (MCP спецификация 2025-03-26). Один `StreamableHTTPServerTransport` с `sessionIdGenerator` и `enableJsonResponse: true`.
+
+- `POST /` — JSON-RPC запросы (initialize, tools/call, resources/list и т.д.)
+- SDK сам обрабатывает GET (SSE-стрим при необходимости)
+- Клиент присылает заголовки: `Content-Type: application/json`, `Accept: application/json, text/event-stream`, `Mcp-Protocol-Version`
+- Сервер возвращает `mcp-session-id` в заголовке после initialize
+- Последующие запросы содержат `Mcp-Session-Id` и `Mcp-Protocol-Version` в заголовках
 
 ## Компоненты
 
-### 1. PHP-исходники ядра (LiveAPI)
+### 1. Индексатор PHP (LiveAPI)
 
-Путь к модулям Bitrix:
+Сканирует PHP-файлы Bitrix и собирает в SQLite:
+- Функции: сигнатуры, аргументы, PHPDoc, полный код
+- Методы классов: с указанием класса и visibility
+- Классы/интерфейсы/трейты: extends, implements
+- События: `GetModuleEvents`, `EventManager::registerEventHandler`
+- Константы: `define()`, class constants
 
-```
-/home/bitrix/ext_www/camouf.ru/bitrix/modules/
-```
+Реализация — regex-парсинг (`src/utils/php-parser.ts`).
 
-При обновлении Bitrix файлы меняются «на месте» — индексер обнаружит изменения
-по дате модификации файлов и переиндексирует только изменившиеся модули.
-
-### 2. Индексатор PHP (LiveAPI)
-
-Сканирует PHP-файлы и собирает:
-
-- Функции: `function functionName(...)`
-- Методы классов: `public function methodName(...)`, `public static function methodName(...)`
-- События: вызовы `GetModuleEvents(...)`, `\Bitrix\Main\EventManager::getInstance()->registerEventHandler(...)`
-- Константы: `define(...)`, class constants
-- Классы/интерфейсы/трейты: extends, implements, use traits
-
-Реализация — `php-parser` (npm), AST-обход. Для v1 допустимо regex-сканирование.
-
-### 3. Схема SQLite
+### 2. Схема SQLite
 
 ```sql
-CREATE TABLE modules (
-    id TEXT PRIMARY KEY,
-    name TEXT,
-    version TEXT,
-    path TEXT,
-    indexed_at DATETIME
-);
-
-CREATE TABLE functions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    module_id TEXT NOT NULL,
-    file_path TEXT NOT NULL,
-    line_number INTEGER NOT NULL,
-    phpdoc TEXT,
-    code TEXT,
-    args TEXT,          -- JSON: [{type, name, defaultValue}]
-    is_method INTEGER DEFAULT 0,
-    class_name TEXT,
-    visibility TEXT     -- 'public'|'protected'|'private'
-);
-
-CREATE TABLE events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    module_id TEXT NOT NULL,
-    file_path TEXT NOT NULL,
-    line_number INTEGER NOT NULL,
-    fired_in_function TEXT
-);
-
-CREATE TABLE classes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    module_id TEXT NOT NULL,
-    file_path TEXT NOT NULL,
-    line_number INTEGER NOT NULL,
-    type TEXT,        -- 'class'|'interface'|'trait'
-    extends TEXT,
-    implements TEXT,
-    phpdoc TEXT
-);
-
-CREATE TABLE doc_chunks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    file_path TEXT NOT NULL,
-    chunk_index INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    embedding BLOB
-);
+CREATE TABLE modules (id TEXT PRIMARY KEY, name TEXT, version TEXT, path TEXT, indexed_at TEXT);
+CREATE TABLE functions (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, module_id TEXT NOT NULL, file_path TEXT NOT NULL, line_number INTEGER NOT NULL, phpdoc TEXT, code TEXT, args TEXT, is_method INTEGER DEFAULT 0, class_name TEXT, visibility TEXT DEFAULT 'public');
+CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, module_id TEXT NOT NULL, file_path TEXT, line_number INTEGER, fired_in_function TEXT);
+CREATE TABLE classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, module_id TEXT NOT NULL, file_path TEXT NOT NULL, line_number INTEGER NOT NULL, type TEXT, extends TEXT, implements TEXT, phpdoc TEXT);
+CREATE TABLE doc_chunks (id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT NOT NULL, chunk_index INTEGER NOT NULL, content TEXT NOT NULL, embedding BLOB);
 ```
 
-### 4. Документация
+### 3. Документация
 
 ```bash
-mkdir -p /opt/bitrix-mcp/data
-cd /opt/bitrix-mcp/data
-git clone --depth 1 https://github.com/bitrix-tools/framework-docs.git docs
+git clone --depth 1 https://github.com/bitrix-tools/framework-docs.git /opt/bitrix-mcp/data/docs
 ```
 
-MCP resources:
-- `bx-docs://list` — дерево файлов и директорий
-- `bx-docs://{path}` — содержимое конкретного .md файла
+MCP resources: `bx-docs://list` (дерево), `bx-docs://{path}` (содержимое .md файла).
 
-Embeddings-индексация:
-- .md → чанки (по заголовкам или ~500 токенов)
-- чанк → embedding (Python-сервис)
-- чанк + embedding → SQLite
-- поиск: embedding запроса → cosine similarity → топ-N чанков
+Embeddings-пайплайн: .md → чанки по заголовкам (~500 токенов) → embedding (Python-сервис) → SQLite. Поиск: cosine similarity.
 
-### 5. Embeddings-сервис (Python)
+### 4. Embeddings-сервис (Python)
 
 ```python
-# /opt/bitrix-mcp/python/embeddings-service.py
 from fastapi import FastAPI
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
@@ -240,36 +116,14 @@ def health():
     return {"status": "ok"}
 ```
 
-systemd:
-
-```ini
-# /etc/systemd/system/bxmcp-embeddings.service
-[Unit]
-Description=BxMCP Embeddings Service
-After=network.target
-
-[Service]
-User=bitrix
-Group=bitrix
-WorkingDirectory=/opt/bitrix-mcp/python
-ExecStart=/opt/bitrix-mcp/python/venv/bin/python -m uvicorn embeddings-service:app --host 127.0.0.1 --port 8000
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 6. MCP-сервер (TypeScript)
-
-Структура проекта:
+### 5. MCP-сервер (TypeScript)
 
 ```
 /opt/bitrix-mcp/
 ├── src/
-│   ├── index.ts                 # точка входа, инициализация MCP
+│   ├── index.ts                 # точка входа, Express + StreamableHTTP
 │   ├── liveapi/
-│   │   ├── indexer.ts           # обход PHP-файлов Bitrix, парсинг
+│   │   ├── indexer.ts           # обход PHP-файлов, парсинг
 │   │   ├── storage.ts           # SQLite: запись/чтение
 │   │   └── tools.ts             # инструменты LiveAPI
 │   ├── docs/
@@ -279,82 +133,44 @@ WantedBy=multi-user.target
 │   │   ├── embeddings.ts        # HTTP-клиент к Python-сервису
 │   │   └── service.ts           # поиск по embeddings
 │   └── utils/
-│       ├── php-parser.ts        # парсер / regex
-│       └── config.ts            # конфигурация (пути, порты)
-├── package.json
-├── tsconfig.json
-└── data/
-    ├── docs/                    # git clone framework-docs
-    └── index.db                 # SQLite
+│       ├── php-parser.ts        # regex-парсер PHP
+│       └── config.ts            # конфигурация
+├── package.json / tsconfig.json
+├── dist/                        # скомпилированный JS
+├── data/
+│   ├── docs/                    # git clone framework-docs
+│   └── index.db                 # SQLite (~90 MB)
+├── scripts/
+│   ├── reindex.sh               # cron: каждый час
+│   └── update-docs.sh           # cron: ежедневно в 3:00
+└── python/
+    └── embeddings-service.py    # FastAPI
 ```
 
-Инструменты MCP:
+## Инструменты MCP
 
 | Инструмент | Описание |
 |-----------|----------|
-| `liveApiListModules` | Список установленных модулей с версиями |
-| `liveApiGetModuleFunctions` | Функции модуля (с пагинацией через cursor) |
+| `liveApiListModules` | Список модулей с версиями |
+| `liveApiGetModuleFunctions` | Функции модуля (пагинация cursor) |
 | `liveApiGetModuleEvents` | События модуля |
-| `liveApiFindFunction` | Поиск функции по имени (с опцией strict) |
+| `liveApiFindFunction` | Поиск функции по имени (strict опция) |
 | `liveApiGetFunctionCode` | Код функции с PHPDoc |
-| `liveApiFindByReflection` | Reflection-поиск по всему проекту (с опцией returnCode) |
+| `liveApiFindByReflection` | Поиск по всему проекту (returnCode опция) |
 | `searchDocs` | Семантический поиск по документации |
-| `envInfo` | Информация об окружении: версия PHP, версии модулей Bitrix, OS |
+| `liveApiReindex` | Принудительная переиндексация |
+| `envInfo` | Информация об окружении |
 
-### 7. Транспорт
-
-MCP-сервер работает в режиме **HTTP + SSE** (не stdio).
-Клиенты подключаются через `mcp-remote` по HTTPS на поддомен `bxmcp.camouf.ru`.
-
-Изначально проксирование было настроено через location `/mcp/` на основном домене
-`camouf.ru`, но Bitrix CMS перехватывает корневые запросы, и `mcp-remote` не может
-корректно открыть SSE-соединение (пытается стучаться на `/`, а там 404).
-Выделенный поддомен решает эту проблему полностью.
-
-Запуск:
-
-```typescript
-// src/index.ts
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import express from 'express';
-
-const app = express();
-const server = new Server({ name: 'bxmcp', version: '1.0.0' }, {
-    capabilities: { tools: {}, resources: {} }
-});
-
-// регистрация инструментов и ресурсов...
-
-app.get('/sse', (req, res) => {
-    const transport = new SSEServerTransport('/messages', res);
-    server.connect(transport);
-});
-
-app.post('/messages', (req, res) => {
-    // обработка входящих сообщений от клиента
-});
-
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', uptime: process.uptime() });
-});
-
-app.listen(3100);
-```
-
-### 8. nginx (прокси)
-
-Основной конфиг (`camouf.ru`) оставляет location `/mcp/`, `/embed/` и `/health`
-для обратной совместимости. После применения DNS поддомен `bxmcp.camouf.ru`
-получает отдельный server block, проксирующий корень на MCP-сервер.
+## nginx
 
 ```nginx
-# /etc/nginx/sites-enabled/camouf.ru.conf (фрагмент — location внутри server блоков)
+# /etc/nginx/conf.d/ratelimit.conf
+limit_req_zone $binary_remote_addr zone=mcp:10m rate=10r/s;
 
-# ===== Основной домен (Bitrix CMS) =====
+# /etc/nginx/sites-enabled/camouf.ru.conf
+
+# Основной домен — Bitrix CMS
 # server_name camouf.ru;
-# Bitrix обслуживает корень (/), MCP доступен по /mcp/
-
 location /mcp/ {
     rewrite ^/mcp(/.*)$ $1 break;
     proxy_pass http://127.0.0.1:3100;
@@ -373,49 +189,15 @@ location /embed/ {
     proxy_pass http://127.0.0.1:8000;
 }
 
-# ===== Поддомен (MCP-сервер) =====
-# Когда DNS bxmcp.camouf.ru применится — раскомментировать:
-# server {
-#     listen 443 ssl;
-#     server_name bxmcp.camouf.ru;
-#
-#     ssl_certificate /etc/letsencrypt/live/camouf.ru/fullchain.pem;
-#     ssl_certificate_key /etc/letsencrypt/live/camouf.ru/privkey.pem;
-#
-#     location / {
-#         proxy_pass http://127.0.0.1:3100;
-#         proxy_http_version 1.1;
-#         proxy_set_header Upgrade $http_upgrade;
-#         proxy_set_header Connection "upgrade";
-#         proxy_set_header Host $host;
-#         proxy_read_timeout 86400s;
-#         proxy_buffering off;
-#         proxy_cache off;
-#         limit_req zone=mcp burst=20 nodelay;
-#     }
-#
-#     location /embed/ {
-#         rewrite ^/embed(/.*)$ $1 break;
-#         proxy_pass http://127.0.0.1:8000;
-#     }
-# }
-#
-# server {
-#     listen 80;
-#     server_name bxmcp.camouf.ru;
-#     return 301 https://$server_name$request_uri;
+# Поддомен bxmcp.camouf.ru
+# server { listen 443 ssl; server_name bxmcp.camouf.ru;
+#     ssl_certificate ...;
+#     location / { proxy_pass http://127.0.0.1:3100; ... }
+#     location /embed/ { rewrite ^/embed(/.*)$ $1 break; proxy_pass http://127.0.0.1:8000; }
 # }
 ```
 
-**Важно:** MCP-сервер на порту 3100 — один. Разница только в том, через какой
-nginx server block к нему обращаться. Через поддомен все IDE-клиенты (`mcp-remote`)
-работают «из коробки», без `/mcp/` в пути.
-
----
-
-## Инфраструктура
-
-### 9. systemd-сервис для MCP
+## systemd
 
 ```ini
 # /etc/systemd/system/bxmcp.service
@@ -440,320 +222,82 @@ Environment=PORT=3100
 WantedBy=multi-user.target
 ```
 
-### 10. rate limiting (nginx)
+```ini
+# /etc/systemd/system/bxmcp-embeddings.service
+[Unit]
+Description=BxMCP Embeddings Service
+After=network.target
 
-```nginx
-# /etc/nginx/conf.d/ratelimit.conf
-limit_req_zone $binary_remote_addr zone=mcp:10m rate=10r/s;
+[Service]
+User=bitrix
+Group=bitrix
+WorkingDirectory=/opt/bitrix-mcp/python
+ExecStart=/opt/bitrix-mcp/python/venv/bin/python -m uvicorn embeddings-service:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-### 11. cron
+## cron
 
 ```bash
 # /etc/cron.d/bxmcp
-# каждый час — проверка изменений в PHP-файлах, переиндексация при необходимости
-0 * * * * bitrix /opt/bitrix-mcp/scripts/reindex.sh
-
-# каждый день в 3:00 — обновление документации + переиндексация embeddings
-0 3 * * * bitrix /opt/bitrix-mcp/scripts/update-docs.sh
+0 * * * * bitrix /opt/bitrix-mcp/scripts/reindex.sh        # каждый час
+0 3 * * * bitrix /opt/bitrix-mcp/scripts/update-docs.sh    # ежедневно в 3:00
 ```
 
-`reindex.sh`:
-```bash
-#!/bin/bash
-BITRIX_PATH="/home/bitrix/ext_www/camouf.ru/bitrix/modules"
-LAST_RUN="/opt/bitrix-mcp/data/last_reindex"
-CHANGES=$(find "$BITRIX_PATH" -name "*.php" -newer "$LAST_RUN" 2>/dev/null | wc -l)
-
-if [ "$CHANGES" -gt 0 ] || [ ! -f "$LAST_RUN" ]; then
-    curl -s -X POST http://127.0.0.1:3100/admin/reindex
-fi
-touch "$LAST_RUN"
-```
-
----
-
-## Инструменты MCP (детально)
-
-### `liveApiListModules`
-
-Вход: `{}`
-Выход: массив `{id, name, version}`
-
-### `liveApiGetModuleFunctions`
-
-Вход: `{moduleId: string, cursor?: string}`
-Выход: `{id, version, functions: [{name, source: {file, line}, args}], nextCursor?}`
-
-### `liveApiGetModuleEvents`
-
-Вход: `{moduleId: string}`
-Выход: `{id, version, events: [{name, source: {file, line}, firedInFunc}]}`
-
-### `liveApiFindFunction`
-
-Вход: `{functionName: string, moduleId?: string, strictSearch?: boolean}`
-Выход: `{items: [{name, moduleId, source: {file, line}}], searchPhrase}`
-
-### `liveApiGetFunctionCode`
-
-Вход: `{functionName: string, moduleId: string}`
-Выход: `string` (код функции с PHPDoc)
-
-### `liveApiFindByReflection`
-
-Вход: `{functionName: string, returnCode?: boolean}`
-Выход: `{items: [{name, code?}], searchPhrase}`
-
-### `searchDocs`
-
-Вход: `{query: string}`
-Выход: `{results: [{filePath, chunkIndex, text, score}]}`
-
-### `envInfo`
-
-Вход: `{}`
-Выход: `{system: {os, hostname}, bitrix: {edition, version, modules}, php: {version, extensions, memoryLimit, maxExecutionTime}}`
-
----
-
-## Этапы реализации
-
-### Этап 1: Фундамент
-
-- [ ] Инициализация проекта TypeScript + `@modelcontextprotocol/sdk`
-- [ ] Базовый MCP-сервер с HTTP SSE транспортом на порту 3100
-- [ ] tools/list + tools/call (заглушки)
-- [ ] Индексатор PHP-функций (рекурсивный обход `/home/bitrix/ext_www/camouf.ru/bitrix/modules/`, парсинг)
-- [ ] SQLite storage: запись и поиск функций
-- [ ] Инструменты: `liveApiListModules`, `liveApiFindFunction`, `liveApiGetFunctionCode`
-- [ ] nginx-прокси на camouf.ru, SSL
-
-### Этап 2: LiveAPI
-
-- [ ] Индексация классов (extends, implements)
-- [ ] Индексация событий (GetModuleEvents + EventManager::registerEventHandler)
-- [ ] `liveApiGetModuleFunctions` (с пагинацией через cursor)
-- [ ] `liveApiGetModuleEvents`
-- [ ] `liveApiFindByReflection`
-- [ ] `envInfo`
-- [ ] Скрипт автоиндексации (cron, `reindex.sh`)
-
-### Этап 3: Документация
-
-- [ ] git clone `framework-docs` в `/opt/bitrix-mcp/data/docs`
-- [ ] MCP resources (список + чтение файлов)
-- [ ] Разбиение .md на чанки
-- [ ] Python-сервис embeddings (FastAPI + `intfloat/multilingual-e5-small`)
-- [ ] Индексация чанков в SQLite
-- [ ] Инструмент `searchDocs` (cosine similarity)
-- [ ] systemd-сервис `bxmcp-embeddings`
-- [ ] Скрипт `update-docs.sh` (cron: ежедневно)
-
-### Этап 4: Стабилизация
-
-- [ ] Логирование запросов (morgan или аналог)
-- [ ] Rate limiting (nginx)
-- [ ] fail2ban
-- [ ] Health-check эндпоинт
-- [ ] Graceful shutdown (SIGTERM → закрытие SSE)
-- [ ] systemd-сервис `bxmcp`
-- [ ] Мониторинг: `systemctl status`, uptime
-- [ ] Инструкция по подключению в README
-
----
-
-## Оценка ресурсов VDS
-
-| Компонент | RAM | CPU | Диск |
-|-----------|-----|-----|------|
-| Bitrix CMS (не используется, но установлен) | ~1 GB | ~1 | ~5 GB |
-| MCP-сервер (Node.js) | ~200 MB | 0.5 | — |
-| Markdown-документация (git) | — | — | ~200 MB |
-| SQLite-индексы | — | — | ~100 MB |
-| Embeddings (Python + модель) | ~2 GB | 1-2 | ~2 GB |
-| **Итого** | **~3.5 GB** | **2 vCPU** | **~10 GB** |
-
-Рекомендуемая конфигурация: **4 GB RAM / 2 vCPU / 20-40 GB SSD**.
-
----
-
-## Альтернативы embeddings
-
-| Вариант | RAM | Скорость | Зависимости |
-|---------|-----|----------|------------|
-| `sentence-transformers` (E5-small) | ~2 GB | ~100ms | Python, ~1 GB модель |
-| `transformers.js` (внутри Node.js) | ~1 GB | ~200ms | npm пакет, без Python |
-| OpenAI `text-embedding-3-small` | 0 | ~300ms (сеть) | API-ключ, плата |
-| Ollama | ~2 GB | ~150ms | Docker/служба |
-
-Для старта: Python-сервис (точность) или transformers.js (простота без второго рантайма).
-
----
-
-## Примеры подключения
-
-### PhpStorm (`/.ai/mcp/mcp.json`) / Cursor (`mcp.json`) / Claude Desktop
+## Подключение клиентов
 
 ```json
 {
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": ["-y", "mcp-remote@0.1.26", "--transport", "sse-only", "https://bxmcp.camouf.ru"]
+      "args": ["-y", "@modelcontextprotocol/mcp-remote", "https://bxmcp.camouf.ru"]
     }
   }
 }
 ```
 
-**Важно:** Сервер использует SSE-only transport. Флаг `--transport sse-only` обязателен — без него `mcp-remote` пытается использовать Streamable HTTP, который не поддерживается.
+## Проверка через curl
 
----
+```bash
+# 1. Initialize — получить sessionId
+SESSION_ID=$(curl -s -X POST https://bxmcp.camouf.ru/mcp/ \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['sessionId'])" 2>/dev/null)
+
+# Если sessionId не в теле ответа, он в заголовке mcp-session-id
+
+# 2. tools/list
+curl -s -X POST https://bxmcp.camouf.ru/mcp/ \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Protocol-Version: 2025-03-26" \
+  -H "Mcp-Session-Id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+
+# 3. tools/call
+curl -s -X POST https://bxmcp.camouf.ru/mcp/ \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Protocol-Version: 2025-03-26" \
+  -H "Mcp-Session-Id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"liveApiListModules","arguments":{}}}'
+```
 
 ## Статус реализации (24.04.2026)
 
-### Что сделано и работает
-
-- [x] Проект `/opt/bitrix-mcp` инициализирован: TypeScript + `@modelcontextprotocol/sdk` v1.26.0 + Express + SQLite
-- [x] MCP-сервер запущен как systemd-сервис `bxmcp` на порту 3100
-- [x] HTTP SSE транспорт: `GET /sse` → `event: endpoint`, `POST /messages?sessionId=X` → `202 Accepted`, ответ через SSE `event: message`
-- [x] Множественные SSE-соединения (Map по sessionId)
-- [x] nginx-прокси: `camouf.ru/mcp/` → `localhost:3100` (SSL, rate limit, rewrite)
-- [x] Индексация PHP-функций Bitrix: просканировано 53 модуля, ~90 MB SQLite-индекс
-- [x] SQLite: таблицы `modules`, `functions`, `classes`, `events`, `doc_chunks` — созданы и заполнены
-- [x] Embeddings-сервис (Python, FastAPI, `intfloat/multilingual-e5-small`) — systemd `bxmcp-embeddings`, порт 8000
-
-**Подтверждённые MCP-инструменты (все 9):**
-
-| Инструмент | Статус |
-|---|---|
-| `liveApiListModules` | ✅ — 53 модуля |
-| `liveApiGetModuleFunctions` | ✅ — с cursor-пагинацией |
-| `liveApiGetModuleEvents` | ✅ |
-| `liveApiFindFunction` | ✅ — поиск по имени |
-| `liveApiGetFunctionCode` | ✅ — код + PHPDoc |
-| `liveApiFindByReflection` | ✅ |
-| `envInfo` | ✅ — OS, PHP, модули |
-| `liveApiReindex` | ✅ — асинхронный |
-| `searchDocs` | ✅ — 1749 чанков с embeddings, семантический поиск |
-
-### Что в процессе
-
-- ⏳ **Миграция на StreamableHTTPServerTransport**: MCP SDK рекомендует новый транспорт вместо SSE. При обновлении SDK сломается — нужно мигрировать.
-
-### Что сделано дополнительно
-
-1. **MCP resources `bx-docs://`**: 109 ресурсов — `bx-docs://list` (дерево) + 108 конкретных `.md` файлов. Код протестирован, `ListResourcesRequestSchema` и `ReadResourceRequestSchema` работают.
-2. **Cron-скрипты**: `reindex.sh` (каждый час: проверка изменений PHP → переиндексация) и `update-docs.sh` (ежедневно в 3:00: git pull документации + переиндексация embeddings) — созданы в `/opt/bitrix-mcp/scripts/`, добавлены в `/etc/cron.d/bxmcp`.
-3. **`.gitignore`**: создан (`node_modules/`, `dist/`, `data/index.db*`, `data/docs/`, `.env`, `*.log`).
-4. **Логирование**: подключён `pino` — логи в stdout, уровень через `LOG_LEVEL` (по умолчанию `info`).
-5. **Graceful shutdown**: `SIGTERM`/`SIGINT` → закрытие HTTP-сервера → закрытие всех SSE-транспортов → exit (с таймаутом 10s).
-6. **fail2ban**: установлен, jail `bxmcp` (400 ошибки на `/mcp/messages`), nginx rate limiting `10r/s`.
-7. **README**: создан `/opt/bitrix-mcp/README.md` с инструкциями по подключению и списком инструментов.
-8. **Обновление документации**: git pull через `update-docs.sh` по cron ежедневно.
-9. **Embedding-пайплайн**: `clearDocChunks()` вызывается перед `indexAllDocs()` — старые embeddings удаляются корректно.
-10. **Версии модулей**: `modules.version` заполняется из `install/version.php` (`$arModuleVersion["VERSION"]`).
-
-### Проверка подключения
-
-```bash
-# Через mcp-remote (рекомендуемый способ для IDE — после применения DNS)
-npx mcp-remote https://bxmcp.camouf.ru
-
-# Через mcp-remote (обратная совместимость, через основной домен)
-npx mcp-remote https://camouf.ru/mcp
-
-# Через curl (ручная проверка, через /mcp/ на основном домене)
-SESSION_ID=$(curl -s -N https://camouf.ru/mcp/sse 2>&1 | grep sessionId | sed 's/.*sessionId=//')
-curl -s -X POST "https://camouf.ru/mcp/messages?sessionId=$SESSION_ID" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"liveApiListModules","arguments":{}}}'
-```
-
----
-
-## Миграция на Streamable HTTP transport
-
-### Почему
-
-Streamable HTTP — новый стандарт MCP (спецификация 2025-03-26 / 2025-11-25), который заменяет старый SSE transport.
-Современные MCP-клиенты (Cursor, PhpStorm, Claude Desktop через `mcp-remote >= 0.1.38`) используют http-first стратегию:
-сначала `POST /` (Streamable HTTP), и только при неудаче падают на SSE.
-
-Старый SSE транспорт всё ещё работает, но поддерживается только через `mcp-remote@0.1.26` с флагом `--transport sse-only`.
-
-### Текущий статус — ⏳ В ПРОЦЕССЕ (24.04.2026)
-
-**Что уже сделано:**
-- SDK обновлён до `@modelcontextprotocol/sdk@1.29.0` (на сервере)
-- Типы `StreamableHTTPServerTransport` импортируются и компилируются
-- Транспорт создаётся с `sessionIdGenerator: () => crypto.randomUUID()`
-- Настроен `POST /` → `streamableTransport.handleRequest(req, res, req.body)`
-
-**Что сломано и нужно починить:**
-
-1. **server.connect(transport) вызывается слишком рано**
-   Текущая проблема: `Server` из SDK (import { Server } from "...") при `connect()` сразу делает initialize. А `StreamableHTTPServerTransport.handleRequest()` тоже пытается инициализировать при первом POST-запросе. Возникает "Server already initialized".
-
-   Решение: не вызывать `server.connect(streamableTransport)` заранее. Вместо этого:
-   - Установить `streamableTransport.onmessage`, `onclose`, `onerror`
-   - Внутри `onmessage` передавать сообщения в `(server as any)._server.handleMessage()`
-   - Либо найти способ передать server в transport без connect()
-
-2. **mcp-remote@0.1.38 не может подключиться**
-   Ошибка: `StreamableHTTPError: Error POSTing to endpoint: SSE connection not established`
-   Причина: `mcp-remote` шлёт `initialize` на `POST /`, сервер отвечает SSE event'ом, но `mcp-remote` ждёт JSON-RPC ответ в теле.
-
-   Последний тест (с чистым Streamable HTTP и отключённым SSE):
-   ```
-   INIT: {"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request: Server already initialized"}}
-   ```
-   Проблема та же — двойная инициализация.
-
-3. **npm install -g mcp-remote@0.1.38** на клиенте (macOS) — обновлено, но не помогает,
-   т.к. сервер не отвечает корректно на Streamable HTTP.
-
-**Что НЕ сломано и должно остаться:**
-- `GET /health` → `{"status":"ok"}`
-- `POST /admin/reindex` и `/admin/reindex-docs`
-- `GET /admin/progress`
-- SQLite с индексами 53 модулей
-- Embeddings-сервис на Python
-
-**План дальнейших действий:**
-1. Разобраться с API SDK 1.29.0: как подключить `Server` к `StreamableHTTPServerTransport` без двойной инициализации
-2. Проверить через curl POST с правильными заголовками `Accept: application/json, text/event-stream`
-3. Протестировать через `mcp-remote@0.1.38` с сервера (localhost)
-4. Обновить конфиги во всех клиентах
-
-**НЕ ТРОГАТЬ, пока не заработает Streamable HTTP:**
-- `/opt/bitrix-mcp/src/index.ts` — основной файл сервера (активная разработка)
-- `/opt/bitrix-mcp/src/liveapi/indexer.ts` — чтение версий модулей (починено)
-- `/opt/bitrix-mcp/node_modules/@modelcontextprotocol/sdk/` — SDK 1.29.0 (не даунгрейдить)
-
-### Подключение клиентов (текущее, пока Streamable HTTP чинится)
-
-Временно для SSE-only (через mcp-remote@0.1.26):
-
-```json
-{
-  "mcpServers": {
-    "bitrix": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote@0.1.26", "--transport", "sse-only", "https://bxmcp.camouf.ru"]
-    }
-  }
-}
-```
-
-Когда Streamable HTTP заработает, будет достаточно:
-```json
-{
-  "mcpServers": {
-    "bitrix": {
-      "command": "npx",
-      "args": ["mcp-remote", "https://bxmcp.camouf.ru"]
-    }
-  }
-}
-```
+- [x] MCP-сервер на Express + `StreamableHTTPServerTransport` (SDK 1.29.0)
+- [x] Индексация 53 модулей Bitrix, ~90 MB SQLite
+- [x] Все 9 инструментов MCP (LiveAPI + searchDocs + envInfo + reindex)
+- [x] MCP resources: `bx-docs://` (109 ресурсов)
+- [x] Embeddings-сервис (Python, FastAPI, `intfloat/multilingual-e5-small`)
+- [x] nginx-прокси: `camouf.ru/mcp/` и `bxmcp.camouf.ru`
+- [x] systemd: `bxmcp` + `bxmcp-embeddings`
+- [x] Cron: автоиндексация (каждый час) + обновление docs (ежедневно)
+- [x] Логирование (pino), graceful shutdown, rate limiting, fail2ban
+- [x] README с инструкциями подключения
