@@ -600,10 +600,7 @@ touch "$LAST_RUN"
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": [
-        "mcp-remote",
-        "https://bxmcp.camouf.ru"
-      ]
+      "args": ["-y", "mcp-remote@0.1.26", "https://bxmcp.camouf.ru"]
     }
   }
 }
@@ -616,10 +613,7 @@ touch "$LAST_RUN"
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": [
-        "mcp-remote",
-        "https://bxmcp.camouf.ru"
-      ]
+      "args": ["-y", "mcp-remote@0.1.26", "https://bxmcp.camouf.ru"]
     }
   }
 }
@@ -632,22 +626,26 @@ touch "$LAST_RUN"
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": [
-        "mcp-remote",
-        "https://bxmcp.camouf.ru"
-      ]
+      "args": ["-y", "mcp-remote@0.1.26", "https://bxmcp.camouf.ru"]
     }
   }
 }
 ```
 
-**Вариант для обратной совместимости** (пока DNS не применился, или через curl):
+**Вариант для обратной совместимости** (через основной домен):
 
-```bash
-npx mcp-remote https://camouf.ru/mcp
+```json
+{
+  "mcpServers": {
+    "bitrix": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@0.1.26", "https://camouf.ru/mcp"]
+    }
+  }
+}
 ```
 
-`mcp-remote` — HTTP-to-stdio мост. Установка: `npx mcp-remote`.
+**Важно:** Фиксируйте версию `mcp-remote@0.1.26`. Более новые версии (>=0.1.38) используют Streamable HTTP transport, с которым сервер несовместим.
 
 ---
 
@@ -757,12 +755,112 @@ curl https://bxmcp.camouf.ru/health → {"status":"ok"}
 Исправлен баг: `express.json()` глобально парсил тело запроса, что ломало `raw-body` в SSEServerTransport. Убран для `/messages`.
 
 **Подключение клиентов:**
+
+> **Важно:** Используйте `mcp-remote@0.1.26`. Более новые версии (>=0.1.38) используют Streamable HTTP transport, который сервер пока не поддерживает.
+
 ```json
 {
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": ["mcp-remote", "https://bxmcp.camouf.ru"]
+      "args": ["-y", "mcp-remote@0.1.26", "https://bxmcp.camouf.ru"]
+    }
+  }
+}
+```
+
+Для обратной совместимости (через основной домен, пока не обновился DNS):
+```json
+{
+  "mcpServers": {
+    "bitrix": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@0.1.26", "https://camouf.ru/mcp"]
+    }
+  }
+}
+```
+
+## Проверка сервера (SSE + SDK)
+
+### 1. Быстрая проверка через health
+```bash
+curl -s https://bxmcp.camouf.ru/health
+# → {"status":"ok"}
+```
+
+### 2. Проверка SSE handshake
+```bash
+curl -s -N https://bxmcp.camouf.ru/sse --max-time 5
+# → event: endpoint
+# → data: /messages?sessionId=<uuid>
+```
+
+### 3. Полная проверка инструментов (через MCP SDK)
+```bash
+# Установить SDK (однократно)
+npm install @modelcontextprotocol/sdk
+
+# Создать тестовый скрипт
+cat > /tmp/test_bxmcp.mjs << 'SCRIPT'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+
+const transport = new SSEClientTransport(new URL("https://bxmcp.camouf.ru/sse"));
+const client = new Client({ name: "test", version: "1.0.0" });
+await client.connect(transport);
+
+const tools = await client.listTools();
+console.log("Tools:", tools.tools.map(t => t.name));
+
+const modules = await client.callTool({ name: "liveApiListModules", arguments: {} });
+console.log("Modules:", modules.content[0].text);
+
+const env = await client.callTool({ name: "envInfo", arguments: {} });
+console.log("Env:", env.content[0].text);
+
+const search = await client.callTool({ name: "searchDocs", arguments: { query: "права доступа" } });
+console.log("Search results:", JSON.parse(search.content[0].text).results.length);
+
+await transport.close();
+SCRIPT
+
+node /tmp/test_bxmcp.mjs
+```
+
+## Подключение к Kilo
+
+### Глобальная конфигурация (`~/.config/kilo/kilo.jsonc`)
+```jsonc
+{
+  "mcp": {
+    "bxmcp": {
+      "type": "remote",
+      "url": "https://bxmcp.camouf.ru",
+      "enabled": true
+    }
+  }
+}
+```
+
+### Порядок действий после добавления в конфиг
+1. Сохранить `kilo.jsonc`
+2. **Перезапустить сессию Kilo** (выйти и зайти заново)
+3. После перезапуска проверить, что сервер появился в списке MCP:
+   - В TUI: `/mcps` — должен быть `bxmcp` со статусом ✅
+   - Или запустить `npx mcp-remote https://bxmcp.camouf.ru` и убедиться, что tools/list возвращает 9 инструментов
+4. Если сервер не отображается:
+   - Проверить, что `enabled: true`
+   - Кило должна поддерживать SSE-транспорт для remote MCP-серверов
+   - Альтернатива: добавить через `mcp-remote` как **local**:
+
+```jsonc
+{
+  "mcp": {
+    "bxmcp": {
+      "type": "local",
+      "command": ["npx", "mcp-remote", "https://bxmcp.camouf.ru"],
+      "enabled": true
     }
   }
 }
