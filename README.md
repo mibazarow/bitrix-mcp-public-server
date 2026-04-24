@@ -9,7 +9,7 @@
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": ["-y", "mcp-remote@0.1.26", "--transport", "sse-only", "https://bxmcp.camouf.ru"]
+      "args": ["-y", "mcp-remote", "https://bxmcp.camouf.ru"]
     }
   }
 }
