@@ -8,6 +8,20 @@
 {
   "mcpServers": {
     "bitrix": {
+      "url": "https://bxmcp.camouf.ru/mcp"
+    }
+  }
+}
+
+> **Для Cursor / Claude Desktop / Kilo** — вставьте в `.cursor/mcp.json`, `claude_desktop_config.json` или `/.ai/mcp/mcp.json` (если ваш клиент поддерживает `url`, иначе используйте `mcp-remote`):
+
+<details>
+<summary>Вариант с npx mcp-remote (если клиент требует command/args)</summary>
+
+```json
+{
+  "mcpServers": {
+    "bitrix": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://bxmcp.camouf.ru"]
     }
@@ -15,7 +29,7 @@
 }
 ```
 
-Куда вставить: `.cursor/mcp.json`, `/.ai/mcp/mcp.json`, `claude_desktop_config.json`.
+</details>
 
 ## Инструменты
 
