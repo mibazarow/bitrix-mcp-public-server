@@ -12,4 +12,4 @@ src/**/*.js
 src/**/*.d.ts
 src/**/*.js.map
 !src/**/*.ts
-!src/**/*.d.ts
+src/**/*.d.ts
