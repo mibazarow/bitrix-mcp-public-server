@@ -1,7 +1,10 @@
 import { readdirSync, readFileSync, statSync, existsSync } from "fs";
-import { join, basename } from "path";
+import { join } from "path";
 import { CONFIG } from "../utils/config.js";
-import { parsePhpFunctions, parsePhpClasses, parsePhpEvents, parsePhpConstants } from "../utils/php-parser.js";
+import {
+  parsePhpFunctions, parsePhpClasses, parsePhpEvents, parsePhpConstants,
+  parseNamespace, parseClassBlocksFromContent
+} from "../utils/php-parser.js";
 import { upsertModule, clearModuleData, insertFunction, insertClass, insertEvent } from "./storage.js";
 
 export interface IndexProgress {
@@ -44,13 +47,15 @@ export function indexAllModules(onProgress?: (p: IndexProgress) => void): { modu
     for (const filePath of phpFiles) {
       try {
         const content = readFileSync(filePath, "utf-8");
+        const namespace = parseNamespace(content);
+        const classBlocks = parseClassBlocksFromContent(content);
 
-        const functions = parsePhpFunctions(content, filePath);
+        const functions = parsePhpFunctions(content, filePath, namespace, classBlocks);
         for (const fn of functions) {
           insertFunction({ ...fn, moduleId: modId, filePath });
         }
 
-        const classes = parsePhpClasses(content, filePath);
+        const classes = parsePhpClasses(content, filePath, namespace);
         for (const cls of classes) {
           insertClass({ ...cls, moduleId: modId, filePath });
         }

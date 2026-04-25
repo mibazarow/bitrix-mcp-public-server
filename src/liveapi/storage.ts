@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { CONFIG } from "../utils/config.js";
-import type { ParsedFunction, ParsedClass, ParsedEvent, ParsedConstant } from "../utils/php-parser.js";
+import type { ParsedFunction, ParsedClass, ParsedEvent } from "../utils/php-parser.js";
 
 let db: Database.Database;
 
@@ -21,6 +21,7 @@ export function initDb(): void {
     CREATE TABLE IF NOT EXISTS functions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
+      full_name TEXT,
       module_id TEXT NOT NULL,
       file_path TEXT NOT NULL,
       line_number INTEGER NOT NULL,
@@ -29,7 +30,8 @@ export function initDb(): void {
       args TEXT,
       is_method INTEGER DEFAULT 0,
       class_name TEXT,
-      visibility TEXT DEFAULT 'public'
+      visibility TEXT DEFAULT 'public',
+      namespace TEXT DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS events (
@@ -44,13 +46,15 @@ export function initDb(): void {
     CREATE TABLE IF NOT EXISTS classes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
+      full_name TEXT,
       module_id TEXT NOT NULL,
       file_path TEXT NOT NULL,
       line_number INTEGER NOT NULL,
       type TEXT,
       extends TEXT,
       implements TEXT,
-      phpdoc TEXT
+      phpdoc TEXT,
+      namespace TEXT DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS doc_chunks (
@@ -62,8 +66,12 @@ export function initDb(): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_functions_name ON functions(name);
+    CREATE INDEX IF NOT EXISTS idx_functions_full_name ON functions(full_name);
     CREATE INDEX IF NOT EXISTS idx_functions_module ON functions(module_id);
+    CREATE INDEX IF NOT EXISTS idx_functions_namespace ON functions(namespace);
     CREATE INDEX IF NOT EXISTS idx_classes_name ON classes(name);
+    CREATE INDEX IF NOT EXISTS idx_classes_full_name ON classes(full_name);
+    CREATE INDEX IF NOT EXISTS idx_classes_namespace ON classes(namespace);
     CREATE INDEX IF NOT EXISTS idx_events_name ON events(name);
     CREATE INDEX IF NOT EXISTS idx_events_module ON events(module_id);
   `);
@@ -82,22 +90,22 @@ export function upsertModule(id: string, name: string, path: string, version: st
 
 export function insertFunction(fn: ParsedFunction & { moduleId: string; filePath: string }): void {
   getDb().prepare(
-    `INSERT INTO functions (name, module_id, file_path, line_number, phpdoc, code, args, is_method, class_name, visibility)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO functions (name, full_name, module_id, file_path, line_number, phpdoc, code, args, is_method, class_name, visibility, namespace)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
-    fn.name, fn.moduleId, fn.filePath, fn.lineNumber,
+    fn.name, fn.fullName, fn.moduleId, fn.filePath, fn.lineNumber,
     fn.phpdoc, fn.code, JSON.stringify(fn.args),
-    fn.isMethod ? 1 : 0, fn.className || null, fn.visibility
+    fn.isMethod ? 1 : 0, fn.className || null, fn.visibility, fn.namespace || ""
   );
 }
 
 export function insertClass(cls: ParsedClass & { moduleId: string; filePath: string }): void {
   getDb().prepare(
-    `INSERT INTO classes (name, module_id, file_path, line_number, type, extends, implements, phpdoc)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO classes (name, full_name, module_id, file_path, line_number, type, extends, implements, phpdoc, namespace)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
-    cls.name, cls.moduleId, cls.filePath, cls.lineNumber,
-    cls.type, JSON.stringify(cls.extends), JSON.stringify(cls.implements), cls.phpdoc
+    cls.name, cls.fullName, cls.moduleId, cls.filePath, cls.lineNumber,
+    cls.type, JSON.stringify(cls.extends), JSON.stringify(cls.implements), cls.phpdoc, cls.namespace || ""
   );
 }
 
@@ -121,7 +129,9 @@ export function listModules(): { id: string; name: string; version: string }[] {
 export function getModuleFunctions(moduleId: string, limit: number, offset: number): { functions: any[]; total: number } {
   const total = (getDb().prepare("SELECT COUNT(*) as cnt FROM functions WHERE module_id = ?").get(moduleId) as any).cnt;
   const functions = getDb().prepare(
-    "SELECT id, name, line_number as lineNumber, file_path as filePath, args, is_method as isMethod, class_name as className FROM functions WHERE module_id = ? ORDER BY name LIMIT ? OFFSET ?"
+    `SELECT id, name, full_name as fullName, line_number as lineNumber, file_path as filePath, args,
+            is_method as isMethod, class_name as className, visibility, namespace
+     FROM functions WHERE module_id = ? ORDER BY name LIMIT ? OFFSET ?`
   ).all(moduleId, limit, offset);
   return { functions, total };
 }
@@ -135,18 +145,48 @@ export function getModuleEvents(moduleId: string): any[] {
 export function findFunction(name: string, moduleId?: string): any[] {
   if (moduleId) {
     return getDb().prepare(
-      "SELECT name, module_id as moduleId, file_path as filePath, line_number as lineNumber FROM functions WHERE name LIKE ? AND module_id = ? ORDER BY name LIMIT 50"
-    ).all(`%${name}%`, moduleId);
+      `SELECT name, full_name as fullName, module_id as moduleId, file_path as filePath,
+              line_number as lineNumber, is_method as isMethod, class_name as className, namespace
+       FROM functions WHERE (name LIKE ? OR full_name LIKE ?) AND module_id = ? ORDER BY name LIMIT 50`
+    ).all(`%${name}%`, `%${name}%`, moduleId);
   }
   return getDb().prepare(
-    "SELECT name, module_id as moduleId, file_path as filePath, line_number as lineNumber FROM functions WHERE name LIKE ? ORDER BY name LIMIT 50"
-  ).all(`%${name}%`);
+    `SELECT name, full_name as fullName, module_id as moduleId, file_path as filePath,
+            line_number as lineNumber, is_method as isMethod, class_name as className, namespace
+     FROM functions WHERE name LIKE ? OR full_name LIKE ? ORDER BY name LIMIT 50`
+  ).all(`%${name}%`, `%${name}%`);
 }
 
 export function findFunctionExact(name: string): any[] {
   return getDb().prepare(
-    "SELECT name, module_id as moduleId, file_path as filePath, line_number as lineNumber FROM functions WHERE name = ? ORDER BY name LIMIT 50"
-  ).all(name);
+    `SELECT name, full_name as fullName, module_id as moduleId, file_path as filePath,
+            line_number as lineNumber, is_method as isMethod, class_name as className, namespace
+     FROM functions WHERE name = ? OR full_name = ? ORDER BY name LIMIT 50`
+  ).all(name, name);
+}
+
+export function findByNamespace(namespace: string): { classes: any[]; functions: any[] } {
+  const ns = namespace.endsWith("\\") ? namespace : namespace + "\\";
+  const classes = getDb().prepare(
+    `SELECT name, full_name as fullName, module_id as moduleId, file_path as filePath, line_number as lineNumber, type
+     FROM classes WHERE namespace = ? OR full_name = ? ORDER BY name LIMIT 50`
+  ).all(namespace, namespace);
+  const functions = getDb().prepare(
+    `SELECT name, full_name as fullName, module_id as moduleId, file_path as filePath, line_number as lineNumber,
+            is_method as isMethod, class_name as className, visibility, namespace
+     FROM functions WHERE namespace = ? OR full_name LIKE ? ORDER BY name LIMIT 100`
+  ).all(namespace, ns + "%");
+  return { classes, functions };
+}
+
+export function getClasses(moduleId: string, limit: number, offset: number): { classes: any[]; total: number } {
+  const total = (getDb().prepare("SELECT COUNT(*) as cnt FROM classes WHERE module_id = ?").get(moduleId) as any).cnt;
+  const classes = getDb().prepare(
+    `SELECT id, name, full_name as fullName, module_id as moduleId, file_path as filePath,
+            line_number as lineNumber, type, extends, implements, namespace
+     FROM classes WHERE module_id = ? ORDER BY name LIMIT ? OFFSET ?`
+  ).all(moduleId, limit, offset);
+  return { classes, total };
 }
 
 export function getFunctionCode(name: string, moduleId: string): string | null {

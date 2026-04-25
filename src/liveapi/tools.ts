@@ -1,5 +1,4 @@
-import { listModules, getModuleFunctions, getModuleEvents, findFunction, findFunctionExact, getFunctionCode } from "./storage.js";
-import { indexAllModules } from "./indexer.js";
+import { listModules, getModuleFunctions, getModuleEvents, findFunction, findFunctionExact, getFunctionCode, findByNamespace, getClasses } from "./storage.js";
 import { execSync } from "child_process";
 
 const PAGE_SIZE = 50;
@@ -23,6 +22,18 @@ export const toolDefinitions = [
     },
   },
   {
+    name: "liveApiGetModuleClasses",
+    description: "Get classes of a module with cursor-based pagination",
+    inputSchema: {
+      type: "object",
+      properties: {
+        moduleId: { type: "string" },
+        cursor: { type: "string" },
+      },
+      required: ["moduleId"],
+    },
+  },
+  {
     name: "liveApiGetModuleEvents",
     description: "Get all events registered in a module",
     inputSchema: {
@@ -33,7 +44,7 @@ export const toolDefinitions = [
   },
   {
     name: "liveApiFindFunction",
-    description: "Search for a function by name across all modules",
+    description: "Search for a function/method by name across all modules",
     inputSchema: {
       type: "object",
       properties: {
@@ -69,15 +80,22 @@ export const toolDefinitions = [
     },
   },
   {
+    name: "liveApiFindByNamespace",
+    description: "Find all classes and functions belonging to a PHP namespace (e.g. Bitrix\\Main\\IO)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        namespace: { type: "string" },
+      },
+      required: ["namespace"],
+    },
+  },
+  {
     name: "envInfo",
     description: "Get environment info: OS, PHP version, Bitrix modules, memory",
     inputSchema: { type: "object", properties: {}, required: [] },
   },
-  {
-    name: "liveApiReindex",
-    description: "Force reindex all PHP functions from Bitrix modules",
-    inputSchema: { type: "object", properties: {}, required: [] },
-  },
+  // liveApiReindex intentionally removed — admin-only, triggered via POST /admin/reindex
 ];
 
 export async function handleToolCall(name: string, args: Record<string, any>): Promise<any> {
@@ -95,6 +113,22 @@ export async function handleToolCall(name: string, args: Record<string, any>): P
           text: JSON.stringify({
             id: moduleId,
             functions: result.functions,
+            nextCursor: offset + PAGE_SIZE < result.total ? String(offset + PAGE_SIZE) : undefined,
+          }, null, 2),
+        }],
+      };
+    }
+
+    case "liveApiGetModuleClasses": {
+      const { moduleId, cursor } = args;
+      const offset = cursor ? parseInt(cursor, 10) : 0;
+      const result = getClasses(moduleId, PAGE_SIZE, offset);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            id: moduleId,
+            classes: result.classes,
             nextCursor: offset + PAGE_SIZE < result.total ? String(offset + PAGE_SIZE) : undefined,
           }, null, 2),
         }],
@@ -136,13 +170,11 @@ export async function handleToolCall(name: string, args: Record<string, any>): P
       };
     }
 
-    case "liveApiReindex": {
-      const result = indexAllModules();
+    case "liveApiFindByNamespace": {
+      const { namespace } = args;
+      const result = findByNamespace(namespace);
       return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({ status: "ok", modulesIndexed: result.modulesIndexed, functionsIndexed: result.functionsIndexed }),
-        }],
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     }
 
