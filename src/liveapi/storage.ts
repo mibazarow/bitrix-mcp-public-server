@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import { CONFIG } from "../utils/config.js";
-import type { ParsedFunction, ParsedClass, ParsedEvent } from "../utils/php-parser.js";
+import type { ParsedFunction, ParsedClass, ParsedEvent, ParsedConstant, FunctionUsage } from "../utils/php-parser.js";
 
 let db: Database.Database;
 
@@ -65,6 +67,29 @@ export function initDb(): void {
       embedding BLOB
     );
 
+    CREATE TABLE IF NOT EXISTS class_constants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      full_name TEXT,
+      module_id TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      line_number INTEGER NOT NULL,
+      visibility TEXT DEFAULT 'public',
+      class_name TEXT,
+      namespace TEXT DEFAULT '',
+      value TEXT DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS function_usages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      function_name TEXT NOT NULL,
+      full_name TEXT,
+      module_id TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      line_number INTEGER NOT NULL,
+      context TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_functions_name ON functions(name);
     CREATE INDEX IF NOT EXISTS idx_functions_full_name ON functions(full_name);
     CREATE INDEX IF NOT EXISTS idx_functions_module ON functions(module_id);
@@ -74,6 +99,10 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_classes_namespace ON classes(namespace);
     CREATE INDEX IF NOT EXISTS idx_events_name ON events(name);
     CREATE INDEX IF NOT EXISTS idx_events_module ON events(module_id);
+    CREATE INDEX IF NOT EXISTS idx_constants_class ON class_constants(class_name);
+    CREATE INDEX IF NOT EXISTS idx_constants_module ON class_constants(module_id);
+    CREATE INDEX IF NOT EXISTS idx_usages_name ON function_usages(function_name);
+    CREATE INDEX IF NOT EXISTS idx_usages_module ON function_usages(module_id);
   `);
 }
 
@@ -116,10 +145,26 @@ export function insertEvent(evt: ParsedEvent & { moduleId: string; filePath: str
   ).run(evt.name, evt.moduleId, evt.filePath, evt.lineNumber, evt.firedInFunction);
 }
 
+export function insertClassConstant(c: ParsedConstant & { moduleId: string; filePath: string }): void {
+  getDb().prepare(
+    `INSERT INTO class_constants (name, full_name, module_id, file_path, line_number, visibility, class_name, namespace, value)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(c.name, c.fullName, c.moduleId, c.filePath, c.lineNumber, c.visibility || "public", c.className || null, c.namespace || "", c.value || "");
+}
+
+export function insertFunctionUsage(u: FunctionUsage & { moduleId: string }): void {
+  getDb().prepare(
+    `INSERT INTO function_usages (function_name, full_name, module_id, file_path, line_number, context)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(u.functionName, u.functionName, u.moduleId, u.filePath, u.lineNumber, u.context || null);
+}
+
 export function clearModuleData(moduleId: string): void {
   getDb().prepare("DELETE FROM functions WHERE module_id = ?").run(moduleId);
   getDb().prepare("DELETE FROM classes WHERE module_id = ?").run(moduleId);
   getDb().prepare("DELETE FROM events WHERE module_id = ?").run(moduleId);
+  getDb().prepare("DELETE FROM class_constants WHERE module_id = ?").run(moduleId);
+  getDb().prepare("DELETE FROM function_usages WHERE module_id = ?").run(moduleId);
 }
 
 export function listModules(): { id: string; name: string; version: string }[] {
@@ -195,6 +240,87 @@ export function getFunctionCode(name: string, moduleId: string): string | null {
   ).get(name, moduleId) as any;
   if (!row) return null;
   return `${row.phpdoc || ""}\n// File: ${row.filePath}:${row.lineNumber}\n${row.code || ""}`;
+}
+
+export function getClassCode(className: string, moduleId: string): string | null {
+  const row = getDb().prepare(
+    "SELECT phpdoc, file_path as filePath, line_number as lineNumber FROM classes WHERE name = ? AND module_id = ? LIMIT 1"
+  ).get(className, moduleId) as any;
+  if (!row) return null;
+  return `${row.phpdoc || ""}\n// File: ${row.filePath}:${row.lineNumber}`;
+}
+
+export function getClassMethods(className: string, moduleId: string): any[] {
+  return getDb().prepare(
+    `SELECT name, full_name as fullName, line_number as lineNumber, phpdoc, args, visibility, namespace
+     FROM functions WHERE class_name = ? AND module_id = ? ORDER BY lineNumber`
+  ).all(className, moduleId);
+}
+
+export function getClassConstants(className: string, moduleId: string): any[] {
+  return getDb().prepare(
+    `SELECT name, full_name as fullName, line_number as lineNumber, visibility, class_name as className, namespace, file_path as filePath, value
+     FROM class_constants WHERE class_name = ? AND module_id = ? ORDER BY name`
+  ).all(className, moduleId);
+}
+
+export function getClassConstantValue(className: string, moduleId: string, constantName: string): any {
+  return getDb().prepare(
+    `SELECT name, full_name as fullName, line_number as lineNumber, visibility, class_name as className, namespace, file_path as filePath, value
+     FROM class_constants WHERE class_name = ? AND module_id = ? AND name = ? LIMIT 1`
+  ).get(className, moduleId, constantName) as any;
+}
+
+export function getFunctionUsage(functionName: string, moduleId?: string): any[] {
+  if (moduleId) {
+    return getDb().prepare(
+      `SELECT function_name as functionName, module_id as moduleId, file_path as filePath, line_number as lineNumber, context
+       FROM function_usages WHERE function_name = ? AND module_id = ? ORDER BY file_path, line_number LIMIT 200`
+    ).all(functionName, moduleId);
+  }
+  return getDb().prepare(
+    `SELECT function_name as functionName, module_id as moduleId, file_path as filePath, line_number as lineNumber, context
+     FROM function_usages WHERE function_name = ? ORDER BY module_id, file_path, line_number LIMIT 200`
+  ).all(functionName);
+}
+
+export function getModuleStructure(moduleId: string): any {
+  const dir = getDb().prepare("SELECT path FROM modules WHERE id = ?").get(moduleId) as any;
+  if (!dir) return null;
+  return { moduleId, path: dir.path };
+}
+
+export function getClassHierarchy(className: string, moduleId: string): any {
+  const row = getDb().prepare(
+    "SELECT name, full_name as fullName, type, extends, implements, module_id as moduleId FROM classes WHERE name = ? AND module_id = ? LIMIT 1"
+  ).get(className, moduleId) as any;
+  if (!row) return null;
+  return { ...row, extends: JSON.parse(row.extends || "[]"), implements: JSON.parse(row.implements || "[]") };
+}
+
+export function findByInterface(interfaceName: string): any[] {
+  return getDb().prepare(
+    `SELECT name, full_name as fullName, module_id as moduleId, file_path as filePath, line_number as lineNumber, type
+     FROM classes WHERE implements LIKE ? ORDER BY name LIMIT 50`
+  ).all(`%${interfaceName}%`);
+}
+
+export function getModuleDependencies(moduleId: string): any[] {
+  return [];
+}
+
+export function getAllEventHandlers(): any[] {
+  return getDb().prepare(
+    "SELECT name, module_id as moduleId, file_path as filePath, line_number as lineNumber, fired_in_function as firedInFunc FROM events ORDER BY name LIMIT 200"
+  ).all();
+}
+
+export function getDocResource(docPath: string): string | null {
+  try {
+    const fullPath = join(CONFIG.docsPath, docPath);
+    if (!existsSync(fullPath)) return null;
+    return readFileSync(fullPath, "utf-8");
+  } catch { return null; }
 }
 
 export function insertDocChunk(filePath: string, chunkIndex: number, content: string, embedding: Buffer | null): void {

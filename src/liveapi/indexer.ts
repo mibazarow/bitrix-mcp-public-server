@@ -3,9 +3,10 @@ import { join } from "path";
 import { CONFIG } from "../utils/config.js";
 import {
   parsePhpFunctions, parsePhpClasses, parsePhpEvents, parsePhpConstants,
+  parsePhpConstantsFull, parseFunctionUsages,
   parseNamespace, parseClassBlocksFromContent
 } from "../utils/php-parser.js";
-import { upsertModule, clearModuleData, insertFunction, insertClass, insertEvent } from "./storage.js";
+import { upsertModule, clearModuleData, insertFunction, insertClass, insertEvent, insertClassConstant, insertFunctionUsage } from "./storage.js";
 
 export interface IndexProgress {
   total: number;
@@ -63,6 +64,16 @@ export function indexAllModules(onProgress?: (p: IndexProgress) => void): { modu
         const events = parsePhpEvents(content);
         for (const evt of events) {
           insertEvent({ ...evt, moduleId: modId, filePath });
+        }
+
+        const constants = parsePhpConstantsFull(content, namespace, classBlocks);
+        for (const c of constants) {
+          insertClassConstant({ ...c, moduleId: modId, filePath });
+        }
+
+        const usages = parseFunctionUsages(content, filePath, modId);
+        for (const u of usages) {
+          insertFunctionUsage({ ...u, moduleId: modId });
         }
 
         totalFunctions += functions.length;

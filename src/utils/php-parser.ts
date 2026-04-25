@@ -28,6 +28,24 @@ export interface ParsedEvent {
   firedInFunction: string;
 }
 
+export interface ParsedConstant {
+  name: string;
+  fullName: string;
+  lineNumber: number;
+  value: string;
+  namespace: string;
+  className?: string;
+  visibility?: string;
+}
+
+export interface FunctionUsage {
+  functionName: string;
+  filePath: string;
+  lineNumber: number;
+  moduleId: string;
+  context: string;
+}
+
 const PHP_NAMESPACE_RE = /namespace\s+([a-zA-Z_\\][a-zA-Z0-9_\\]*)\s*;/g;
 const PHP_CLASS_RE = /(?:\/\*\*[\s\S]*?\*\/)?\s*(?:abstract\s+|final\s+)?(class|interface|trait)\s+([a-zA-Z_\\][a-zA-Z0-9_]*)\s*(?:extends\s+([a-zA-Z_\\][a-zA-Z0-9_\\]*))?\s*(?:implements\s+([a-zA-Z_\\][a-zA-Z0-9_\\,\s]*))?/gm;
 
@@ -237,6 +255,87 @@ export function parsePhpEvents(phpCode: string): ParsedEvent[] {
   }
 
   return events;
+}
+
+const CLASS_CONST_RE = /(?:\/\*\*[\s\S]*?\*\/)?\s*(?:(public|protected|private)\s+)?const\s+([a-zA-Z_\\][a-zA-Z0-9_]*)\s*=\s*([^;]+)\s*;/gm;
+
+export function parsePhpConstantsFull(
+  phpCode: string, namespace: string, classBlocks: ClassBlock[]
+): ParsedConstant[] {
+  const constants: ParsedConstant[] = [];
+  const ns = namespace || "";
+  const lines = phpCode.split("\n");
+
+  CLASS_CONST_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CLASS_CONST_RE.exec(phpCode)) !== null) {
+    const lineNum = phpCode.substring(0, match.index).split("\n").length;
+    const enclosingClass = isInsideClass(lineNum, classBlocks);
+    const visibility = match[1] || "public";
+    const name = match[2];
+    const value = match[3].trim();
+    const prefix = ns ? ns + "\\" : "";
+    const classPrefix = enclosingClass ? prefix + enclosingClass.name + "::" : "";
+    constants.push({
+      name,
+      fullName: classPrefix + name,
+      lineNumber: lineNum,
+      value,
+      namespace: ns,
+      className: enclosingClass?.name,
+      visibility,
+    });
+  }
+
+  const defineRe = /define\s*\(\s*["']([a-zA-Z_][a-zA-Z0-9_]*)["']\s*,/g;
+  while ((match = defineRe.exec(phpCode)) !== null) {
+    const lineNum = phpCode.substring(0, match.index).split("\n").length;
+    const enclosingClass = isInsideClass(lineNum, classBlocks);
+    const name = match[1];
+    const prefix = ns ? ns + "\\" : "";
+    const classPrefix = enclosingClass ? prefix + enclosingClass.name + "::" : "";
+    constants.push({
+      name,
+      fullName: classPrefix + name,
+      lineNumber: lineNum,
+      value: "",
+      namespace: ns,
+      className: enclosingClass?.name,
+    });
+  }
+
+  return constants;
+}
+
+export function parseFunctionUsages(
+  phpCode: string, filePath: string, moduleId: string
+): FunctionUsage[] {
+  const usages: FunctionUsage[] = [];
+  const lines = phpCode.split("\n");
+
+  const fnCallRe = /([a-zA-Z_\\][a-zA-Z0-9_\\]*(?:::[a-zA-Z_\\][a-zA-Z0-9_]*)?)\s*\(/gm;
+  fnCallRe.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  const seen = new Set<string>();
+  while ((match = fnCallRe.exec(phpCode)) !== null) {
+    const lineNum = phpCode.substring(0, match.index).split("\n").length;
+    const name = match[1];
+    if (name === "function" || name === "if" || name === "for" || name === "while" ||
+        name === "foreach" || name === "switch" || name === "catch" || name === "throw" ||
+        name === "return" || name === "echo" || name === "print" || name === "array" ||
+        name === "isset" || name === "empty" || name === "unset" || name === "list" ||
+        name === "new" || name === "self" || name === "parent" || name === "static" ||
+        name === "die" || name === "exit" || name.startsWith("$") || name.includes("->")) continue;
+
+    const key = name + ":" + lineNum;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const context = lines[lineNum - 1]?.trim().substring(0, 120) || "";
+    usages.push({ functionName: name, filePath, lineNumber: lineNum, moduleId, context });
+  }
+
+  return usages;
 }
 
 export function parseNamespace(content: string): string {
