@@ -320,27 +320,19 @@ curl http://127.0.0.1:3100/admin/progress
 ## 15. Проверка работоспособности
 
 ```bash
-# Initialize
-curl -s -X POST https://bxmcp.camouf.ru/mcp/ \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'
+# Сервер работает в stateless-режиме — initialize и Mcp-Session-Id не нужны
 
-# tools/list (с sessionId из заголовка ответа)
-curl -s -X POST https://bxmcp.camouf.ru/mcp/ \
+# tools/list
+curl -s -X POST https://bxmcp.camouf.ru/ \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "Mcp-Protocol-Version: 2025-03-26" \
-  -H "Mcp-Session-Id: <SESSION_ID>" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 
 # tools/call
-curl -s -X POST https://bxmcp.camouf.ru/mcp/ \
+curl -s -X POST https://bxmcp.camouf.ru/ \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "Mcp-Protocol-Version: 2025-03-26" \
-  -H "Mcp-Session-Id: <SESSION_ID>" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"liveApiListModules","arguments":{}}}'
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"liveApiListModules","arguments":{}}}'
 
 # Health
 curl https://bxmcp.camouf.ru/health

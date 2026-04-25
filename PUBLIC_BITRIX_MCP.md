@@ -50,15 +50,18 @@ VDS
 
 **Ключевое решение**: MCP-сервер читает PHP-файлы непосредственно из установленного Bitrix. Индексы всегда соответствуют реальной версии ядра.
 
+**Stateless-режим**: SDK-проверка `_initialized` отключена установкой `_initialized = true` и `sessionIdGenerator = undefined` на внутреннем `_webStandardTransport`. Клиенту не нужны `initialize` и `Mcp-Session-Id` — достаточно POST с `Content-Type: application/json` и `Accept: application/json, text/event-stream`.
+
 ## Транспорт
 
-**Streamable HTTP** (MCP спецификация 2025-03-26). Один `StreamableHTTPServerTransport` с `sessionIdGenerator` и `enableJsonResponse: true`.
+**Streamable HTTP** (MCP спецификация 2025-03-26). Сервер работает в **stateless-режиме** — клиенту не нужно отправлять `initialize` или `Mcp-Session-Id`.
 
-- `POST /` — JSON-RPC запросы (initialize, tools/call, resources/list и т.д.)
+- `POST /` — любые JSON-RPC запросы (tools/list, tools/call, resources/list и т.д.)
 - SDK сам обрабатывает GET (SSE-стрим при необходимости)
-- Клиент присылает заголовки: `Content-Type: application/json`, `Accept: application/json, text/event-stream`, `Mcp-Protocol-Version`
-- Сервер возвращает `mcp-session-id` в заголовке после initialize
-- Последующие запросы содержат `Mcp-Session-Id` и `Mcp-Protocol-Version` в заголовках
+- Клиент присылает заголовки: `Content-Type: application/json`, `Accept: application/json, text/event-stream`
+- `initialize` не требуется — SDK-проверка `_initialized` отключена на уровне транспорта
+- `Mcp-Session-Id` не требуется — session management отключён (sessionIdGenerator = undefined)
+- Каждый HTTP-запрос создаёт новый транспорт. Сессии не сохраняются между запросами
 
 ## Компоненты
 
@@ -147,18 +150,43 @@ def health():
     └── embeddings-service.py    # FastAPI
 ```
 
-## Инструменты MCP
+## Инструменты MCP (21 шт.)
 
+### Модули и структура
 | Инструмент | Описание |
-|-----------|----------|
-| `liveApiListModules` | Список модулей с версиями |
-| `liveApiGetModuleFunctions` | Функции модуля (пагинация cursor) |
+|---|---|
+| `liveApiListModules` | Список всех 53 модулей с версиями |
+| `liveApiGetModuleFunctions` | Функции модуля (курсорная пагинация) |
+| `liveApiGetModuleClasses` | Классы модуля (курсорная пагинация) |
 | `liveApiGetModuleEvents` | События модуля |
-| `liveApiFindFunction` | Поиск функции по имени (strict опция) |
-| `liveApiGetFunctionCode` | Код функции с PHPDoc |
+| `liveApiGetAllEvents` | Все события всех модулей |
+| `liveApiGetModuleStructure` | Файловый путь модуля |
+| `liveApiGetModuleDependencies` | Зависимости модуля |
+
+### Поиск по коду
+| Инструмент | Описание |
+|---|---|
+| `liveApiFindFunction` | Поиск функции/метода по имени (strict опция) |
 | `liveApiFindByReflection` | Поиск по всему проекту (returnCode опция) |
+| `liveApiFindByNamespace` | Поиск по PHP-неймспейсу |
+| `liveApiFindByInterface` | Все классы по интерфейсу |
+| `liveApiGetFunctionCode` | Код функции с PHPDoc |
+| `liveApiGetFunctionUsage` | Где вызывается функция (grep) |
+
+### Классы
+| Инструмент | Описание |
+|---|---|
+| `liveApiGetClassCode` | Путь к файлу класса + PHPDoc |
+| `liveApiGetClassMethods` | Методы класса с сигнатурами |
+| `liveApiGetClassConstants` | Константы класса |
+| `liveApiGetClassConstantValue` | Значение константы из исходников |
+| `liveApiGetClassHierarchy` | extends/implements |
+
+### Документация и окружение
+| Инструмент | Описание |
+|---|---|
+| `liveApiGetDocResource` | Файл документации по пути |
 | `searchDocs` | Семантический поиск по документации |
-| `liveApiReindex` | Принудительная переиндексация |
 | `envInfo` | Информация об окружении |
 
 ## nginx
@@ -261,42 +289,34 @@ WantedBy=multi-user.target
 }
 ```
 
-## Проверка через curl
+## Проверка через curl (sessionId не требуется)
+
+Сервер работает в stateless-режиме — клиенту не нужно слать initialize или указывать `Mcp-Session-Id`.
 
 ```bash
-# 1. Initialize — получить sessionId
-SESSION_ID=$(curl -s -X POST https://bxmcp.camouf.ru/mcp/ \
+# tools/list
+curl -s -X POST https://bxmcp.camouf.ru/ \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['sessionId'])" 2>/dev/null)
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 
-# Если sessionId не в теле ответа, он в заголовке mcp-session-id
-
-# 2. tools/list
-curl -s -X POST https://bxmcp.camouf.ru/mcp/ \
+# tools/call
+curl -s -X POST https://bxmcp.camouf.ru/ \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "Mcp-Protocol-Version: 2025-03-26" \
-  -H "Mcp-Session-Id: $SESSION_ID" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
-
-# 3. tools/call
-curl -s -X POST https://bxmcp.camouf.ru/mcp/ \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -H "Mcp-Protocol-Version: 2025-03-26" \
-  -H "Mcp-Session-Id: $SESSION_ID" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"liveApiListModules","arguments":{}}}'
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"liveApiListModules","arguments":{}}}'
 ```
 
-## Статус реализации (24.04.2026)
+## Статус реализации (25.04.2026)
 
 - [x] MCP-сервер на Express + `StreamableHTTPServerTransport` (SDK 1.29.0)
-- [x] Индексация 53 модулей Bitrix, ~90 MB SQLite
-- [x] Все 9 инструментов MCP (LiveAPI + searchDocs + envInfo + reindex)
+- [x] Индексация 53 модулей Bitrix, ~333 MB SQLite
+- [x] **21 инструмент** MCP (LiveAPI: модули, функции, классы, события, константы, неймспейсы + searchDocs + envInfo)
 - [x] MCP resources: `bx-docs://` (109 ресурсов)
 - [x] Embeddings-сервис (Python, FastAPI, `intfloat/multilingual-e5-small`)
-- [x] nginx-прокси: `camouf.ru/mcp/` и `bxmcp.camouf.ru`
+- [x] Stateless-режим — клиенту не нужны initialize/sessionId
+- [x] Исправлена ошибка `ERR_HTTP_HEADERS_SENT` при множественных вызовах инструментов
+- [x] nginx-прокси: `bxmcp.camouf.ru` и `camouf.ru/mcp/`
 - [x] systemd: `bxmcp` + `bxmcp-embeddings`
 - [x] Cron: автоиндексация (каждый час) + обновление docs (ежедневно)
 - [x] Логирование (pino), graceful shutdown, rate limiting, fail2ban
