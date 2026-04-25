@@ -95,6 +95,51 @@ async function handleMcpRequest(req: express.Request, res: express.Response) {
   try {
     const headerSessionId = req.headers["mcp-session-id"] as string | undefined;
     const { transport, isNew } = await getOrCreateSession(headerSessionId);
+
+    // Auto-initialize the transport's session: the SDK handles initialize
+    // internally when it sees method === "initialize" in the POST body.
+    // We trick it by substituting the body momentarily.
+    if (isNew && req.body && req.body.method !== "initialize") {
+      const initBody = {
+        jsonrpc: "2.0" as const,
+        method: "initialize" as const,
+        params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "kilo", version: "1.0" } },
+        id: 0,
+      };
+
+      // Capture and discard the response from initialize
+      const origJson = res.json.bind(res);
+      const origEnd = res.end.bind(res);
+      const origWriteHead = res.writeHead.bind(res);
+      const origWrite = res.write.bind(res);
+      const origStatus = res.status.bind(res);
+
+      let initDone = false;
+      const swallow = () => {
+        if (!initDone) {
+          initDone = true;
+          // Re-apply real methods but only for future calls
+          return res;
+        }
+        return res;
+      };
+
+      res.json = ((data: any) => swallow()) as any;
+      res.end = ((data?: any) => swallow()) as any;
+      res.writeHead = ((code: number) => swallow()) as any;
+      res.write = ((chunk: any) => swallow()) as any;
+      res.status = ((code: number) => swallow()) as any;
+
+      await transport.handleRequest(req, res, initBody);
+
+      // Restore original methods
+      res.json = origJson;
+      res.end = origEnd;
+      res.writeHead = origWriteHead;
+      res.write = origWrite;
+      res.status = origStatus;
+    }
+
     await transport.handleRequest(req, res, req.body);
   } catch (err: any) {
     logger.error({ err }, "MCP request failed");
