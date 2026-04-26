@@ -1,175 +1,121 @@
-# Перенос BxMCP на новый сервер
+# BxMCP — MCP-сервер для Bitrix Framework
 
-Миграция MCP-сервера для Bitrix Framework с минимальными усилиями.
-Предполагается, что пользователь `bitrix` и сайт `camouf.ru` (Bitrix CMS) уже развёрнуты на новом сервере.
+**Публичный MCP-сервер**, который даёт AI-агентам (Cursor, Claude Desktop, PhpStorm, Kilo) точную, актуальную информацию по Bitrix Framework напрямую из исходного кода и документации.
 
----
+## Быстрый старт
 
-## Что в этом архиве
+```json
+{
+  "mcpServers": {
+    "bitrix": {
+      "url": "https://bxmcp.camouf.ru/mcp"
+    }
+  }
+}
+
+> **Для Cursor / Claude Desktop / Kilo** — вставьте в `.cursor/mcp.json`, `claude_desktop_config.json` или `/.ai/mcp/mcp.json` (если ваш клиент поддерживает `url`, иначе используйте `mcp-remote`):
+
+<details>
+<summary>Вариант с npx mcp-remote (если клиент требует command/args)</summary>
+
+```json
+{
+  "mcpServers": {
+    "bitrix": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://bxmcp.camouf.ru"]
+    }
+  }
+}
+```
+
+</details>
+
+## Инструменты (21 шт.)
+
+### Модули и структура
+
+| Инструмент | Что делает |
+|---|---|
+| `liveApiListModules` | Список всех 53 модулей Bitrix с версиями |
+| `liveApiGetModuleFunctions` | Функции модуля (курсорная пагинация) |
+| `liveApiGetModuleClasses` | Классы модуля (курсорная пагинация) |
+| `liveApiGetModuleEvents` | События, зарегистрированные в модуле |
+| `liveApiGetAllEvents` | Все события разом — по всем модулям |
+| `liveApiGetModuleStructure` | Файловый путь модуля на сервере |
+| `liveApiGetModuleDependencies` | Зависимости модуля (requireModule) |
+
+### Поиск по коду
+
+| Инструмент | Что делает |
+|---|---|
+| `liveApiFindFunction` | Поиск функции/метода по имени во всех модулях (~90K+) |
+| `liveApiFindByReflection` | Поиск по всему проекту, опционально с кодом |
+| `liveApiFindByNamespace` | Поиск по PHP-неймспейсу (Bitrix\Main\IO) |
+| `liveApiFindByInterface` | Все классы, реализующие заданный интерфейс |
+| `liveApiGetFunctionCode` | Полный исходный код функции с PHPDoc |
+| `liveApiGetFunctionUsage` | Где вызывается функция (grep по кодбейсу) |
+
+### Классы
+
+| Инструмент | Что делает |
+|---|---|
+| `liveApiGetClassCode` | Путь к файлу класса и PHPDoc |
+| `liveApiGetClassMethods` | Все методы класса с сигнатурами и visibility |
+| `liveApiGetClassConstants` | Все константы класса |
+| `liveApiGetClassConstantValue` | Значение конкретной константы из исходников |
+| `liveApiGetClassHierarchy` | extends/implements для класса |
+
+### Документация и окружение
+
+| Инструмент | Что делает |
+|---|---|
+| `liveApiGetDocResource` | Содержимое файла документации по пути |
+| `searchDocs` | Семантический поиск по документации Bitrix Framework |
+| `envInfo` | Версия PHP, ОС, список модулей, память |
+
+## Примеры промптов
 
 ```
-SWITCH_TO_NEW_SERVER/
-├── README.md                 — этот файл
-├── src/                      — исходный код TypeScript
-├── dist/                     — скомпилированный JS (готов к запуску)
-├── scripts/                  — cron-скрипты (reindex.sh, update-docs.sh)
-├── embeddings-service.py     — Python-сервис embeddings (FastAPI)
-├── package.json              — зависимости Node.js
-├── package-lock.json
-├── tsconfig.json             — конфиг TypeScript
-└── .gitignore
+Найди функцию GetList в модуле main и покажи её код с сигнатурой
 ```
 
-Переезд один-в-один — все конфиги уже готовы. Править ничего не нужно.
+```
+Как правильно использовать \Bitrix\Main\ORM\Query\Query? Поищи в документации про ORM
+```
 
-Внутри `src/` лежат вспомогательные файлы (копируются на сервер при установке):
-- `bxmcp.service` — systemd-юнит для MCP-сервера
-- `bxmcp-embeddings.service` — systemd-юнит для embeddings
-- `nginx-camouf.ru.conf` — nginx-конфиг
-- `nginx-ratelimit.conf` — rate limiting для nginx
-- `cron-bxmcp` — расписание cron
+```
+Какие события есть в модуле sale? Покажи все зарегистрированные события
+```
 
----
+## Как это устроено
 
-## Перенос
+```
+BxMCP Server (Node.js, порт 3100)
+  ├── LiveAPI — парсит PHP-файлы Bitrix (/bitrix/modules/)
+  ├── Docs — поиск по markdown-документации (git)
+  ├── Embeddings (Python) — семантический поиск
+  └── SQLite — индекс функций, классов, событий, чанков docs
+```
 
-### 1. Распаковать код
+Транспорт: **Streamable HTTP** (MCP spec 2025-03-26). Сервер читает PHP-файлы ядра Bitrix напрямую — индексы всегда соответствуют реальной версии.
+
+## Проверка (без sessionId — достаточно POST)
 
 ```bash
-mkdir -p /opt/bitrix-mcp
-cp -r SWITCH_TO_NEW_SERVER/* /opt/bitrix-mcp/
-```
-
-### 2. Установить Node.js (если ещё нет)
-
-```bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
-source ~/.bashrc
-nvm install 22
-```
-
-Создать скрипт-враппер, который systemd использует в `ExecStart`:
-
-```bash
-cat > /usr/local/bin/bxmcp-node << 'EOF'
-#!/bin/bash
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-exec node "$@"
-EOF
-chmod +x /usr/local/bin/bxmcp-node
-```
-
-### 3. Установить зависимости Node.js
-
-```bash
-cd /opt/bitrix-mcp
-npm install
-```
-
-### 4. Настроить Python-окружение для embeddings
-
-```bash
-cd /opt/bitrix-mcp/python
-python3 -m venv venv
-source venv/bin/activate
-pip install fastapi uvicorn sentence-transformers
-```
-
-> В первый раз `sentence-transformers` скачает модель `intfloat/multilingual-e5-small` (~2 GB) в кэш HuggingFace. Это единственная тяжёлая операция, всё остальное — секунды.
-
-### 5. Склонировать документацию
-
-```bash
-mkdir -p /opt/bitrix-mcp/data
-cd /opt/bitrix-mcp/data
-git clone --depth 1 https://github.com/bitrix-tools/framework-docs.git docs
-```
-
-### 6. Установить systemd-сервисы
-
-```bash
-cp /opt/bitrix-mcp/src/bxmcp.service /etc/systemd/system/
-cp /opt/bitrix-mcp/src/bxmcp-embeddings.service /etc/systemd/system/
-systemctl daemon-reload
-```
-
-### 7. Запустить
-
-```bash
-systemctl enable --now bxmcp-embeddings
-systemctl enable --now bxmcp
-```
-
-### 8. Настроить nginx
-
-```bash
-cp /opt/bitrix-mcp/src/nginx-camouf.ru.conf /etc/nginx/sites-available/
-ln -s /etc/nginx/sites-available/nginx-camouf.ru.conf /etc/nginx/sites-enabled/
-nginx -t && systemctl reload nginx
-```
-
-### 9. Настроить cron
-
-```bash
-cp /opt/bitrix-mcp/src/cron-bxmcp /etc/cron.d/bxmcp
-```
-
-### 10. Переиндексировать PHP-файлы и документацию
-
-```bash
-curl -s -X POST http://127.0.0.1:3100/admin/reindex
-curl -s -X POST http://127.0.0.1:3100/admin/reindex-docs
-```
-
-Первая индексация может занять некоторое время (зависит от сервера).
-
----
-
-## Проверка
-
-```bash
-curl https://bxmcp.camouf.ru/health
-
-curl -X POST https://bxmcp.camouf.ru/ \
+curl -s -X POST https://bxmcp.camouf.ru/ \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"liveApiListModules","arguments":{}},"id":1}' | jq .result.content[0].text
 ```
 
----
+## Ресурсы
 
-## Структура на новом сервере после установки
+- **Сервер**: `https://bxmcp.camouf.ru`
+- **Health**: `https://bxmcp.camouf.ru/health`
+- **Архитектура**: `PUBLIC_BITRIX_MCP.md`
 
-```
-/opt/bitrix-mcp/
-├── src/                     # исходники (из архива)
-├── dist/                    # скомпилированный JS (из архива)
-├── scripts/                 # cron-скрипты (из архива)
-├── python/
-│   ├── embeddings-service.py  # из архива
-│   └── venv/                  # создаётся на шаге 3
-├── data/
-│   ├── docs/                  # git clone framework-docs
-│   ├── index.db               # создаётся при первой индексации
-│   └── last_reindex           # служебный файл
-├── node_modules/            # npm install
-├── package.json
-├── package-lock.json
-└── tsconfig.json
-```
+## Ограничения
 
----
-
-## Что НЕ входит в архив (создаётся на новом сервере автоматом)
-
-| Компонент | Как появится |
-|---|---|
-| `node_modules/` | `npm install` |
-| `python/venv/` | `python3 -m venv && pip install` |
-| `data/docs/` | `git clone` |
-| `data/index.db` | `curl /admin/reindex` |
-| systemd-юниты | копируются из `src/` |
-| nginx-конфиг | копируется из `src/` |
-| cron | копируется из `src/` |
-| SSL-сертификаты | `certbot` на новом сервере |
+- Rate limit: 10 запросов/сек на IP (nginx)
+- Публичный доступ, аутентификация не требуется

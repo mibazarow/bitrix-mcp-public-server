@@ -4,7 +4,7 @@ import {
   getClassConstants, getClassConstantValue, getFunctionUsage, getModuleStructure, getClassHierarchy,
   findByInterface, getModuleDependencies, getAllEventHandlers, getDocResource
 } from "./storage.js";
-import { readFileSync, readdirSync } from "fs";
+import { readFileSync } from "fs";
 import { join } from "path";
 import { CONFIG } from "../utils/config.js";
 import { execSync } from "child_process";
@@ -423,6 +423,8 @@ export async function handleToolCall(name: string, args: Record<string, any>): P
 }
 
 function listPhpFiles(dir: string): string[] {
+  const { readdirSync, statSync } = require("fs");
+  const { join } = require("path");
   const files: string[] = [];
   try {
     const entries = readdirSync(dir, { withFileTypes: true });
