@@ -4,12 +4,3 @@ data/index.db*
 data/docs/
 .env
 *.log
-.DS_Store
-coupon
-
-# TypeScript compilation artifacts
-src/**/*.js
-src/**/*.d.ts
-src/**/*.js.map
-!src/**/*.ts
-src/**/*.d.ts
