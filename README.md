@@ -109,6 +109,10 @@ curl -s -X POST https://bxmcp.camouf.ru/ \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"liveApiListModules","arguments":{}},"id":1}' | jq .result.content[0].text
 ```
 
+## Лицензия
+
+- [WTFPL](LICENSE) — делайте что хотите.
+
 ## Ресурсы
 
 - **Сервер**: `https://bxmcp.camouf.ru`
