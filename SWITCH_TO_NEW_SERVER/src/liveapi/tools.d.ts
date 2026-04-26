@@ -10,6 +10,10 @@ export declare const toolDefinitions: ({
             strictSearch?: undefined;
             returnCode?: undefined;
             namespace?: undefined;
+            className?: undefined;
+            constantName?: undefined;
+            interfaceName?: undefined;
+            docPath?: undefined;
         };
         required: never[];
     };
@@ -29,6 +33,10 @@ export declare const toolDefinitions: ({
             strictSearch?: undefined;
             returnCode?: undefined;
             namespace?: undefined;
+            className?: undefined;
+            constantName?: undefined;
+            interfaceName?: undefined;
+            docPath?: undefined;
         };
         required: string[];
     };
@@ -46,6 +54,10 @@ export declare const toolDefinitions: ({
             strictSearch?: undefined;
             returnCode?: undefined;
             namespace?: undefined;
+            className?: undefined;
+            constantName?: undefined;
+            interfaceName?: undefined;
+            docPath?: undefined;
         };
         required: string[];
     };
@@ -67,6 +79,10 @@ export declare const toolDefinitions: ({
             cursor?: undefined;
             returnCode?: undefined;
             namespace?: undefined;
+            className?: undefined;
+            constantName?: undefined;
+            interfaceName?: undefined;
+            docPath?: undefined;
         };
         required: string[];
     };
@@ -86,6 +102,10 @@ export declare const toolDefinitions: ({
             strictSearch?: undefined;
             returnCode?: undefined;
             namespace?: undefined;
+            className?: undefined;
+            constantName?: undefined;
+            interfaceName?: undefined;
+            docPath?: undefined;
         };
         required: string[];
     };
@@ -105,6 +125,10 @@ export declare const toolDefinitions: ({
             cursor?: undefined;
             strictSearch?: undefined;
             namespace?: undefined;
+            className?: undefined;
+            constantName?: undefined;
+            interfaceName?: undefined;
+            docPath?: undefined;
         };
         required: string[];
     };
@@ -122,6 +146,100 @@ export declare const toolDefinitions: ({
             functionName?: undefined;
             strictSearch?: undefined;
             returnCode?: undefined;
+            className?: undefined;
+            constantName?: undefined;
+            interfaceName?: undefined;
+            docPath?: undefined;
+        };
+        required: string[];
+    };
+} | {
+    name: string;
+    description: string;
+    inputSchema: {
+        type: string;
+        properties: {
+            className: {
+                type: string;
+            };
+            moduleId: {
+                type: string;
+            };
+            cursor?: undefined;
+            functionName?: undefined;
+            strictSearch?: undefined;
+            returnCode?: undefined;
+            namespace?: undefined;
+            constantName?: undefined;
+            interfaceName?: undefined;
+            docPath?: undefined;
+        };
+        required: string[];
+    };
+} | {
+    name: string;
+    description: string;
+    inputSchema: {
+        type: string;
+        properties: {
+            className: {
+                type: string;
+            };
+            moduleId: {
+                type: string;
+            };
+            constantName: {
+                type: string;
+            };
+            cursor?: undefined;
+            functionName?: undefined;
+            strictSearch?: undefined;
+            returnCode?: undefined;
+            namespace?: undefined;
+            interfaceName?: undefined;
+            docPath?: undefined;
+        };
+        required: string[];
+    };
+} | {
+    name: string;
+    description: string;
+    inputSchema: {
+        type: string;
+        properties: {
+            interfaceName: {
+                type: string;
+            };
+            moduleId?: undefined;
+            cursor?: undefined;
+            functionName?: undefined;
+            strictSearch?: undefined;
+            returnCode?: undefined;
+            namespace?: undefined;
+            className?: undefined;
+            constantName?: undefined;
+            docPath?: undefined;
+        };
+        required: string[];
+    };
+} | {
+    name: string;
+    description: string;
+    inputSchema: {
+        type: string;
+        properties: {
+            docPath: {
+                type: string;
+            };
+            moduleId?: undefined;
+            cursor?: undefined;
+            functionName?: undefined;
+            strictSearch?: undefined;
+            returnCode?: undefined;
+            namespace?: undefined;
+            className?: undefined;
+            constantName?: undefined;
+            interfaceName?: undefined;
         };
         required: string[];
     };

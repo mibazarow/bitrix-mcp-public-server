@@ -1,5 +1,6 @@
-import { listModules, getModuleFunctions, getModuleEvents, findFunction, findFunctionExact, getFunctionCode, findByNamespace, getClasses } from "./storage.js";
-import { indexAllModules } from "./indexer.js";
+import { listModules, getModuleFunctions, getModuleEvents, findFunction, findFunctionExact, getFunctionCode, findByNamespace, getClasses, getClassCode, getClassMethods, getClassConstants, getClassConstantValue, getFunctionUsage, getModuleStructure, getClassHierarchy, findByInterface, getModuleDependencies, getAllEventHandlers, getDocResource } from "./storage.js";
+import { readdirSync } from "fs";
+import { join } from "path";
 import { execSync } from "child_process";
 const PAGE_SIZE = 50;
 export const toolDefinitions = [
@@ -90,15 +91,133 @@ export const toolDefinitions = [
         },
     },
     {
+        name: "liveApiGetClassCode",
+        description: "Get the file path and PHPDoc for a class",
+        inputSchema: {
+            type: "object",
+            properties: {
+                className: { type: "string" },
+                moduleId: { type: "string" },
+            },
+            required: ["className", "moduleId"],
+        },
+    },
+    {
+        name: "liveApiGetClassMethods",
+        description: "Get all methods of a class with signatures and visibility",
+        inputSchema: {
+            type: "object",
+            properties: {
+                className: { type: "string" },
+                moduleId: { type: "string" },
+            },
+            required: ["className", "moduleId"],
+        },
+    },
+    {
+        name: "liveApiGetClassConstants",
+        description: "Get all constants of a class",
+        inputSchema: {
+            type: "object",
+            properties: {
+                className: { type: "string" },
+                moduleId: { type: "string" },
+            },
+            required: ["className", "moduleId"],
+        },
+    },
+    {
+        name: "liveApiGetClassConstantValue",
+        description: "Get the value of a specific class constant from source code",
+        inputSchema: {
+            type: "object",
+            properties: {
+                className: { type: "string" },
+                moduleId: { type: "string" },
+                constantName: { type: "string" },
+            },
+            required: ["className", "moduleId", "constantName"],
+        },
+    },
+    {
+        name: "liveApiGetClassHierarchy",
+        description: "Get extends and implements info for a class",
+        inputSchema: {
+            type: "object",
+            properties: {
+                className: { type: "string" },
+                moduleId: { type: "string" },
+            },
+            required: ["className", "moduleId"],
+        },
+    },
+    {
+        name: "liveApiFindByInterface",
+        description: "Find all classes that implement a given interface",
+        inputSchema: {
+            type: "object",
+            properties: {
+                interfaceName: { type: "string" },
+            },
+            required: ["interfaceName"],
+        },
+    },
+    {
+        name: "liveApiGetAllEvents",
+        description: "Get all registered events across all modules",
+        inputSchema: { type: "object", properties: {}, required: [] },
+    },
+    {
+        name: "liveApiGetModuleStructure",
+        description: "Get the filesystem path of a module",
+        inputSchema: {
+            type: "object",
+            properties: {
+                moduleId: { type: "string" },
+            },
+            required: ["moduleId"],
+        },
+    },
+    {
+        name: "liveApiGetModuleDependencies",
+        description: "Get dependencies of a module (from requireModule calls)",
+        inputSchema: {
+            type: "object",
+            properties: {
+                moduleId: { type: "string" },
+            },
+            required: ["moduleId"],
+        },
+    },
+    {
+        name: "liveApiGetFunctionUsage",
+        description: "Find where a function is used (called) across the codebase using grep",
+        inputSchema: {
+            type: "object",
+            properties: {
+                functionName: { type: "string" },
+                moduleId: { type: "string" },
+            },
+            required: ["functionName"],
+        },
+    },
+    {
+        name: "liveApiGetDocResource",
+        description: "Get content of a documentation file by path",
+        inputSchema: {
+            type: "object",
+            properties: {
+                docPath: { type: "string" },
+            },
+            required: ["docPath"],
+        },
+    },
+    {
         name: "envInfo",
         description: "Get environment info: OS, PHP version, Bitrix modules, memory",
         inputSchema: { type: "object", properties: {}, required: [] },
     },
-    {
-        name: "liveApiReindex",
-        description: "Force reindex all PHP functions from Bitrix modules",
-        inputSchema: { type: "object", properties: {}, required: [] },
-    },
+    // liveApiReindex intentionally removed — admin-only, triggered via POST /admin/reindex
 ];
 export async function handleToolCall(name, args) {
     switch (name) {
@@ -172,14 +291,75 @@ export async function handleToolCall(name, args) {
                 content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
             };
         }
-        case "liveApiReindex": {
-            const result = indexAllModules();
-            return {
-                content: [{
-                        type: "text",
-                        text: JSON.stringify({ status: "ok", modulesIndexed: result.modulesIndexed, functionsIndexed: result.functionsIndexed }),
-                    }],
-            };
+        case "liveApiGetClassCode": {
+            const { className, moduleId } = args;
+            const code = getClassCode(className, moduleId);
+            if (!code) {
+                return { content: [{ type: "text", text: "Class not found: " + className + " in " + moduleId }] };
+            }
+            return { content: [{ type: "text", text: code }] };
+        }
+        case "liveApiGetClassMethods": {
+            const { className, moduleId } = args;
+            const methods = getClassMethods(className, moduleId);
+            return { content: [{ type: "text", text: JSON.stringify({ className, moduleId, methods }, null, 2) }] };
+        }
+        case "liveApiGetClassConstants": {
+            const { className, moduleId } = args;
+            const constants = getClassConstants(className, moduleId);
+            return { content: [{ type: "text", text: JSON.stringify({ className, moduleId, constants }, null, 2) }] };
+        }
+        case "liveApiGetClassConstantValue": {
+            const { className, moduleId, constantName } = args;
+            const constant = getClassConstantValue(className, moduleId, constantName);
+            if (!constant) {
+                return { content: [{ type: "text", text: "Constant not found: " + className + "::" + constantName }] };
+            }
+            return { content: [{ type: "text", text: JSON.stringify(constant, null, 2) }] };
+        }
+        case "liveApiGetClassHierarchy": {
+            const { className, moduleId } = args;
+            const hierarchy = getClassHierarchy(className, moduleId);
+            if (!hierarchy) {
+                return { content: [{ type: "text", text: "Class not found: " + className + " in " + moduleId }] };
+            }
+            return { content: [{ type: "text", text: JSON.stringify(hierarchy, null, 2) }] };
+        }
+        case "liveApiFindByInterface": {
+            const { interfaceName } = args;
+            const items = findByInterface(interfaceName);
+            return { content: [{ type: "text", text: JSON.stringify({ interfaceName, items }, null, 2) }] };
+        }
+        case "liveApiGetAllEvents": {
+            const events = getAllEventHandlers();
+            return { content: [{ type: "text", text: JSON.stringify({ events }, null, 2) }] };
+        }
+        case "liveApiGetModuleStructure": {
+            const { moduleId } = args;
+            const structure = getModuleStructure(moduleId);
+            if (!structure) {
+                return { content: [{ type: "text", text: "Module not found: " + moduleId }] };
+            }
+            const files = listPhpFiles(structure.path);
+            return { content: [{ type: "text", text: JSON.stringify({ ...structure, fileCount: files.length, files }, null, 2) }] };
+        }
+        case "liveApiGetModuleDependencies": {
+            const { moduleId } = args;
+            const deps = getModuleDependencies(moduleId);
+            return { content: [{ type: "text", text: JSON.stringify({ moduleId, dependencies: deps }, null, 2) }] };
+        }
+        case "liveApiGetFunctionUsage": {
+            const { functionName, moduleId } = args;
+            const items = getFunctionUsage(functionName, moduleId);
+            return { content: [{ type: "text", text: JSON.stringify({ functionName, usages: items }, null, 2) }] };
+        }
+        case "liveApiGetDocResource": {
+            const { docPath } = args;
+            const content = getDocResource(docPath);
+            if (!content) {
+                return { content: [{ type: "text", text: "Document not found: " + docPath }] };
+            }
+            return { content: [{ type: "text", text: content }] };
         }
         case "envInfo": {
             try {
@@ -211,5 +391,24 @@ export async function handleToolCall(name, args) {
         default:
             throw new Error("Unknown tool: " + name);
     }
+}
+function listPhpFiles(dir) {
+    const files = [];
+    try {
+        const entries = readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+            const fullPath = join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (entry.name.startsWith(".") || entry.name === "node_modules")
+                    continue;
+                files.push(...listPhpFiles(fullPath));
+            }
+            else if (entry.name.endsWith(".php")) {
+                files.push(fullPath.replace(dir + "/", ""));
+            }
+        }
+    }
+    catch { }
+    return files;
 }
 //# sourceMappingURL=tools.js.map
