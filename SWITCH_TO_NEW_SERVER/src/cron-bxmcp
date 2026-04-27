@@ -1,5 +1,0 @@
-# каждый час — проверка изменений в PHP-файлах, переиндексация при необходимости
-0 * * * * root /opt/bitrix-mcp/scripts/reindex.sh
-
-# каждый день в 3:00 — обновление документации + переиндексация embeddings
-0 3 * * * root /opt/bitrix-mcp/scripts/update-docs.sh

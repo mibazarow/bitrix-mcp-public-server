@@ -3,10 +3,10 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { CONFIG } from "./utils/config.js";
-import { initDb } from "./liveapi/storage.js";
+import { initDb, loadEmbeddingsCache } from "./liveapi/storage.js";
 import { toolDefinitions, handleToolCall } from "./liveapi/tools.js";
 import { resourceDefinitions, handleResourceRead } from "./docs/resources.js";
-import { indexAllModules } from "./liveapi/indexer.js";
+import { indexAllModules, indexAllComponents } from "./liveapi/indexer.js";
 import { searchDocs, indexAllDocs } from "./search/service.js";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
@@ -21,6 +21,7 @@ if (!existsSync(join(CONFIG.dbPath, ".."))) {
 }
 
 initDb();
+loadEmbeddingsCache();
 
 function createServer(): Server {
   const server = new Server(
@@ -65,79 +66,72 @@ function createServer(): Server {
   return server;
 }
 
-// Session-aware MCP endpoint — one transport+server per session
+// Session-aware MCP endpoint — stateful sessions cached, stateless per-request
 const sessions = new Map<string, { server: Server; transport: StreamableHTTPServerTransport }>();
-
-async function getOrCreateSession(sessionId?: string): Promise<{
-  transport: StreamableHTTPServerTransport;
-  server: Server;
-  isNew: boolean;
-  sessionId: string;
-}> {
-  if (sessionId && sessions.has(sessionId)) {
-    const s = sessions.get(sessionId)!;
-    return { transport: s.transport, server: s.server, isNew: false, sessionId };
-  }
-
-  const sid = sessionId || crypto.randomUUID();
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => sid,
-    enableJsonResponse: true,
-  });
-  const server = createServer();
-  await server.connect(transport);
-  sessions.set(sid, { server, transport });
-  logger.info({ sessionId: sid }, "Session created");
-  return { transport, server, isNew: true, sessionId: sid };
-}
 
 async function handleMcpRequest(req: express.Request, res: express.Response) {
   try {
     const headerSessionId = req.headers["mcp-session-id"] as string | undefined;
-    const { transport, isNew } = await getOrCreateSession(headerSessionId);
+    const isStateless = !headerSessionId;
+    const sid = headerSessionId || crypto.randomUUID();
 
-    // Auto-initialize the transport's session: the SDK handles initialize
-    // internally when it sees method === "initialize" in the POST body.
-    // We trick it by substituting the body momentarily.
-    if (isNew && req.body && req.body.method !== "initialize") {
-      const initBody = {
-        jsonrpc: "2.0" as const,
-        method: "initialize" as const,
-        params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "kilo", version: "1.0" } },
-        id: 0,
-      };
+    let transport: StreamableHTTPServerTransport;
+    let server: Server;
+    let isNew = false;
 
-      // Capture and discard the response from initialize
-      const origJson = res.json.bind(res);
-      const origEnd = res.end.bind(res);
-      const origWriteHead = res.writeHead.bind(res);
-      const origWrite = res.write.bind(res);
-      const origStatus = res.status.bind(res);
+    if (isStateless) {
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      server = createServer();
+      await server.connect(transport);
+    } else if (sessions.has(sid)) {
+      const cached = sessions.get(sid)!;
+      transport = cached.transport;
+      server = cached.server;
+    } else {
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => sid,
+        enableJsonResponse: true,
+      });
+      server = createServer();
+      await server.connect(transport);
+      sessions.set(sid, { server, transport });
+      isNew = true;
+      logger.info({ sessionId: sid }, "Stateful session created");
 
-      let initDone = false;
-      const swallow = () => {
-        if (!initDone) {
-          initDone = true;
-          // Re-apply real methods but only for future calls
-          return res;
-        }
-        return res;
-      };
+      // Auto-initialize if the client skipped initialize
+      if (req.body && req.body.method !== "initialize") {
+        const initBody = {
+          jsonrpc: "2.0" as const,
+          method: "initialize" as const,
+          params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "bxmcp", version: "1.0" } },
+          id: 0,
+        };
+        const origJson = res.json.bind(res);
+        const origEnd = res.end.bind(res);
+        const origWriteHead = res.writeHead.bind(res);
+        const origWrite = res.write.bind(res);
+        const origStatus = res.status.bind(res);
 
-      res.json = ((data: any) => swallow()) as any;
-      res.end = ((data?: any) => swallow()) as any;
-      res.writeHead = ((code: number) => swallow()) as any;
-      res.write = ((chunk: any) => swallow()) as any;
-      res.status = ((code: number) => swallow()) as any;
+        let initDone = false;
+        const swallow = () => { if (!initDone) { initDone = true; return res; } return res; };
 
-      await transport.handleRequest(req, res, initBody);
+        res.json = ((data: any) => swallow()) as any;
+        res.end = ((data?: any) => swallow()) as any;
+        res.writeHead = ((code: number) => swallow()) as any;
+        res.write = ((chunk: any) => swallow()) as any;
+        res.status = ((code: number) => swallow()) as any;
 
-      // Restore original methods
-      res.json = origJson;
-      res.end = origEnd;
-      res.writeHead = origWriteHead;
-      res.write = origWrite;
-      res.status = origStatus;
+        await transport.handleRequest(req, res, initBody);
+
+        res.json = origJson;
+        res.end = origEnd;
+        res.writeHead = origWriteHead;
+        res.write = origWrite;
+        res.status = origStatus;
+      }
     }
 
     await transport.handleRequest(req, res, req.body);
@@ -169,17 +163,41 @@ app.post("/admin/reindex", async (req, res) => {
   indexingProgress = "started";
   setImmediate(async () => {
     try {
-      const result = indexAllModules();
+      const modules = indexAllModules();
+      const components = indexAllComponents();
+      const result = { ...modules, ...components };
       indexingProgress = "done: " + JSON.stringify(result);
-      logger.info({ result }, "Reindex completed");
+      logger.info({ result }, "Full reindex completed");
     } catch (e: any) {
       indexingProgress = "error: " + e.message;
-      logger.error({ err: e }, "Reindex failed");
+      logger.error({ err: e }, "Full reindex failed");
     } finally {
       isIndexing = false;
     }
   });
-  res.json({ status: "ok", message: "Reindex started in background" });
+  res.json({ status: "ok", message: "Full reindex (modules + components) started in background" });
+});
+
+app.post("/admin/reindex-components", async (req, res) => {
+  if (isIndexing) {
+    res.json({ status: "busy", progress: indexingProgress });
+    return;
+  }
+  isIndexing = true;
+  indexingProgress = "started";
+  setImmediate(async () => {
+    try {
+      const result = indexAllComponents();
+      indexingProgress = "done: " + JSON.stringify(result);
+      logger.info({ result }, "Components reindex completed");
+    } catch (e: any) {
+      indexingProgress = "error: " + e.message;
+      logger.error({ err: e }, "Components reindex failed");
+    } finally {
+      isIndexing = false;
+    }
+  });
+  res.json({ status: "ok", message: "Components reindex started in background" });
 });
 
 app.post("/admin/reindex-docs", async (req, res) => {

@@ -11,7 +11,7 @@ ExecStart=/usr/local/bin/bxmcp-node /opt/bitrix-mcp/dist/index.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
-Environment=BITRIX_PATH=/home/bitrix/ext_www/camouf.ru/bitrix/modules
+Environment=BITRIX_PATH=/var/www/SITE.ru/bitrix/modules
 Environment=EMBEDDINGS_URL=http://127.0.0.1:8000
 Environment=PORT=3100
 

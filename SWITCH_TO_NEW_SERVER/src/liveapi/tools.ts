@@ -1,8 +1,9 @@
 import {
-  listModules, getModuleFunctions, getModuleEvents, findFunction, findFunctionExact,
+  listModules, listComponents, getModuleFunctions, getModuleEvents, findFunction, findFunctionExact,
   getFunctionCode, findByNamespace, getClasses, getClassCode, getClassMethods,
   getClassConstants, getClassConstantValue, getFunctionUsage, getModuleStructure, getClassHierarchy,
-  findByInterface, getModuleDependencies, getAllEventHandlers, getDocResource
+  findByInterface, getModuleDependencies, getAllEventHandlers, getDocResource,
+  listDataManagers, getEntityFields, getEventHandlers
 } from "./storage.js";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
@@ -15,7 +16,12 @@ export const toolDefinitions = [
   {
     name: "liveApiListModules",
     description: "List all installed Bitrix modules with versions",
-    inputSchema: { type: "object", properties: {}, required: [] },
+    inputSchema: { type: "object", properties: {}, required: [] }
+  },
+  {
+    name: "liveApiListComponents",
+    description: "List all indexed Bitrix components (from /bitrix/components/)",
+    inputSchema: { type: "object", properties: {}, required: [] }
   },
   {
     name: "liveApiGetModuleFunctions",
@@ -225,6 +231,40 @@ export const toolDefinitions = [
     description: "Get environment info: OS, PHP version, Bitrix modules, memory",
     inputSchema: { type: "object", properties: {}, required: [] },
   },
+  {
+    name: "liveApiListDataManagers",
+    description: "List all DataManager ORM classes in a module or across all modules",
+    inputSchema: {
+      type: "object",
+      properties: {
+        moduleId: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "liveApiGetEntityFields",
+    description: "Get ORM entity fields from a DataManager class (parses getMap() method)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        className: { type: "string" },
+        moduleId: { type: "string" },
+      },
+      required: ["className", "moduleId"],
+    },
+  },
+  {
+    name: "liveApiGetEventHandler",
+    description: "Get detailed event handler registrations for a specific event by name",
+    inputSchema: {
+      type: "object",
+      properties: {
+        eventName: { type: "string" },
+      },
+      required: ["eventName"],
+    },
+  },
   // liveApiReindex intentionally removed — admin-only, triggered via POST /admin/reindex
 ];
 
@@ -232,6 +272,9 @@ export async function handleToolCall(name: string, args: Record<string, any>): P
   switch (name) {
     case "liveApiListModules":
       return { content: [{ type: "text", text: JSON.stringify(listModules(), null, 2) }] };
+
+    case "liveApiListComponents":
+      return { content: [{ type: "text", text: JSON.stringify(listComponents(), null, 2) }] };
 
     case "liveApiGetModuleFunctions": {
       const { moduleId, cursor } = args;
@@ -415,6 +458,23 @@ export async function handleToolCall(name: string, args: Record<string, any>): P
       } catch {
         return { content: [{ type: "text", text: JSON.stringify({ error: "Failed to get env info" }) }] };
       }
+    }
+
+    case "liveApiListDataManagers": {
+      const { moduleId } = args;
+      return { content: [{ type: "text", text: JSON.stringify(listDataManagers(moduleId), null, 2) }] };
+    }
+
+    case "liveApiGetEntityFields": {
+      const { className, moduleId } = args;
+      const fields = getEntityFields(className, moduleId);
+      return { content: [{ type: "text", text: JSON.stringify({ className, moduleId, fields }, null, 2) }] };
+    }
+
+    case "liveApiGetEventHandler": {
+      const { eventName } = args;
+      const handlers = getEventHandlers(eventName);
+      return { content: [{ type: "text", text: JSON.stringify({ eventName, handlers }, null, 2) }] };
     }
 
     default:

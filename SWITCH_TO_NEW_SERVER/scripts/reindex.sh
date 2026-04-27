@@ -1,5 +1,5 @@
 #!/bin/bash
-BITRIX_PATH="/home/bitrix/ext_www/camouf.ru/bitrix/modules"
+BITRIX_PATH="${BITRIX_PATH:-/var/www/SITE.ru/bitrix/modules}"
 LAST_RUN="/opt/bitrix-mcp/data/last_reindex"
 
 if [ ! -f "$LAST_RUN" ]; then

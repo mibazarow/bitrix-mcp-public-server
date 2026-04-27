@@ -1,6 +1,6 @@
 import { getDocChunks } from "../docs/service.js";
 import { getEmbedding } from "./embeddings.js";
-import { insertDocChunk, searchDocChunks, clearDocChunks } from "../liveapi/storage.js";
+import { insertDocChunk, searchDocChunks, clearDocChunks, loadEmbeddingsCache } from "../liveapi/storage.js";
 
 export async function indexAllDocs(onProgress?: (current: number, total: number) => void): Promise<void> {
   const chunks = getDocChunks();
@@ -13,6 +13,8 @@ export async function indexAllDocs(onProgress?: (current: number, total: number)
     insertDocChunk(chunk.filePath, i, chunk.content, embBuffer);
     onProgress?.(i + 1, chunks.length);
   }
+
+  loadEmbeddingsCache();
 }
 
 export async function searchDocs(query: string, limit: number = 10): Promise<any[]> {
