@@ -397,11 +397,16 @@ export function clearDocChunks(): void {
   invalidateEmbeddingsCache();
 }
 
-export function getDocChunkContents(): Map<string, string> {
-  const rows = getDb().prepare("SELECT file_path, chunk_index, content FROM doc_chunks").all() as any[];
-  const map = new Map<string, string>();
+export function getDocChunkContents(): Map<string, { content: string; hasEmbedding: boolean }> {
+  const rows = getDb().prepare(
+    "SELECT file_path, chunk_index, content, embedding IS NOT NULL AS has_embedding FROM doc_chunks"
+  ).all() as any[];
+  const map = new Map<string, { content: string; hasEmbedding: boolean }>();
   for (const row of rows) {
-    map.set(chunkKey(row.file_path, row.chunk_index), row.content);
+    map.set(chunkKey(row.file_path, row.chunk_index), {
+      content: row.content,
+      hasEmbedding: row.has_embedding === 1,
+    });
   }
   return map;
 }

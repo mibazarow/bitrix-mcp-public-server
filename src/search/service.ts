@@ -29,7 +29,7 @@ export async function indexAllDocs(
     setMeta("embeddings_signature", signature);
   }
 
-  const existing = storedSignature === signature ? getDocChunkContents() : new Map<string, string>();
+  const existing = storedSignature === signature ? getDocChunkContents() : new Map();
   const chunks = getDocChunks();
   const seen = new Set<string>();
   let embedded = 0;
@@ -39,7 +39,8 @@ export async function indexAllDocs(
     const key = chunkKey(chunk.filePath, i);
     seen.add(key);
 
-    if (existing.get(key) === chunk.content) {
+    const previous = existing.get(key);
+    if (previous && previous.content === chunk.content && previous.hasEmbedding) {
       onProgress?.(i + 1, chunks.length, embedded);
       continue;
     }
