@@ -40,7 +40,7 @@ VDS
 │   └── SQLite — /opt/bitrix-mcp/data/index.db
 │
 ├── Embeddings Service (Python, FastAPI, порт 8000)
-│   └── sentence-transformers google/embeddinggemma-2 (text+image, fp32, 256d)
+│   └── sentence-transformers google/embeddinggemma-2 (text-only, fp32, 256d)
 │
 └── nginx — прокси:
     ├── bxmcp.camouf.ru → localhost:3100 (MCP)
@@ -112,15 +112,9 @@ Embeddings-пайплайн: .md → чанки по заголовкам (≤15
 
 ### 4. Embeddings-сервис (Python)
 
-Модель — **`google/embeddinggemma-2`**, Apache 2.0. Грузится в режиме text+image:
-`config_kwargs={"audio_config": None}` — audio-энкодер отключён, в памяти 440M из 740M.
-Текст и картинки делят одно 768-мерное пространство, поэтому текстовый запрос находит
-изображения.
-
-Включение vision **не меняет текстовые векторы** (`max_abs_diff = 0.0`), поэтому смена
-модальности не требует переиндексации текста. Картинки при этом дорогие: ~88 s на
-изображение при 280 soft-токенах и ~20–25 s при 70 — их индексируют отдельной ночной
-очередью.
+Модель — **`google/embeddinggemma-2`**, Apache 2.0. Грузится в text-only режиме:
+`config_kwargs={"vision_config": None, "audio_config": None}` — в памяти 270M-бэкбон
+вместо всех 740M.
 
 Ограничения, зашитые в конфиг:
 
@@ -300,7 +294,7 @@ curl -s -X POST https://bxmcp.camouf.ru/ \
 - [x] Индексация 53 модулей Bitrix, ~333 MB SQLite
 - [x] **24 инструмента** MCP (LiveAPI: модули, функции, классы, события, константы, неймспейсы, компоненты, ORM + searchDocs)
 - [x] MCP resources: `bx-docs://` (109 ресурсов)
-- [x] Embeddings-сервис (Python, FastAPI, `google/embeddinggemma-2`, text+image, fp32, 256d, профили)
+- [x] Embeddings-сервис (Python, FastAPI, `google/embeddinggemma-2`, text-only, fp32, 256d, профили)
 - [x] Stateless-режим — клиенту не нужны initialize/sessionId
 - [x] Исправлена ошибка `ERR_HTTP_HEADERS_SENT` при множественных вызовах инструментов
 - [x] nginx-прокси: `bxmcp.camouf.ru` и `camouf.ru/mcp/`
