@@ -31,7 +31,7 @@
 
 </details>
 
-## Инструменты (21 шт.)
+## Инструменты (24 шт.)
 
 ### Модули и структура
 
@@ -42,8 +42,17 @@
 | `liveApiGetModuleClasses` | Классы модуля (курсорная пагинация) |
 | `liveApiGetModuleEvents` | События, зарегистрированные в модуле |
 | `liveApiGetAllEvents` | Все события разом — по всем модулям |
+| `liveApiGetEventHandler` | Обработчики конкретного события |
 | `liveApiGetModuleStructure` | Файловый путь модуля на сервере |
 | `liveApiGetModuleDependencies` | Зависимости модуля (requireModule) |
+
+### Компоненты и ORM
+
+| Инструмент | Что делает |
+|---|---|
+| `liveApiListComponents` | Список проиндексированных компонентов (`comp:<namespace>:<name>`) |
+| `liveApiListDataManagers` | DataManager-классы ORM в модуле или по всем модулям |
+| `liveApiGetEntityFields` | Поля ORM-сущности из `getMap()` DataManager-класса |
 
 ### Поиск по коду
 
@@ -66,13 +75,12 @@
 | `liveApiGetClassConstantValue` | Значение конкретной константы из исходников |
 | `liveApiGetClassHierarchy` | extends/implements для класса |
 
-### Документация и окружение
+### Документация
 
 | Инструмент | Что делает |
 |---|---|
 | `liveApiGetDocResource` | Содержимое файла документации по пути |
 | `searchDocs` | Семантический поиск по документации Bitrix Framework |
-| `envInfo` | Версия PHP, ОС, список модулей, память |
 
 ## Примеры промптов
 
@@ -92,13 +100,32 @@
 
 ```
 BxMCP Server (Node.js, порт 3100)
-  ├── LiveAPI — парсит PHP-файлы Bitrix (/bitrix/modules/)
+  ├── LiveAPI — парсит PHP-файлы Bitrix (/bitrix/modules/ и /bitrix/components/)
   ├── Docs — поиск по markdown-документации (git)
-  ├── Embeddings (Python) — семантический поиск
+  ├── Embeddings (Python, порт 8000) — EmbeddingGemma 2, семантический поиск
+  ├── Analytics — SQLite-статистика использования (/admin/stats, /admin/usage)
   └── SQLite — индекс функций, классов, событий, чанков docs
 ```
 
 Транспорт: **Streamable HTTP** (MCP spec 2025-03-26). Сервер читает PHP-файлы ядра Bitrix напрямую — индексы всегда соответствуют реальной версии.
+
+### EmbeddingGemma 2
+
+Семантический поиск работает на **`google/embeddinggemma-2`** (Apache 2.0, text-only
+бэкбон 270M, fp32, 256-мерные векторы через Matryoshka-усечение).
+
+Сервис эмбеддингов общий: один процесс обслуживает несколько потребителей через
+**профили** — профиль задаёт обязательный для этой модели task-префикс и размерность.
+
+| Профиль | Префикс | Кто использует |
+|---|---|---|
+| `docs_query` | `task: search result \| query: ` | запросы `searchDocs` |
+| `docs_passage` | `title: none \| text: ` | индексация документации |
+| `site_query` / `site_passage` | те же | BXADMIN-S (индекс сайта) |
+| `code_query` | `task: code retrieval \| query: ` | поиск по коду |
+| `generic` | без префикса | служебное |
+
+Полная инструкция по установке — [HOWTO.md](HOWTO.md).
 
 ## Проверка (без sessionId — достаточно POST)
 
@@ -111,15 +138,17 @@ curl -s -X POST https://bxmcp.camouf.ru/ \
 
 ## Лицензия
 
-- [WTFPL](LICENSE) — делайте что хотите.
+- [MIT](LICENSE)
 
 ## Ресурсы
 
 - **Сервер**: `https://bxmcp.camouf.ru`
-- **Health**: `https://bxmcp.camouf.ru/health`
+- **Health**: `https://bxmcp.camouf.ru/health` (включает модель, размерность и подпись индекса)
+- **Статистика использования**: `https://camouf.ru/mcp-stats` (JSON), `https://camouf.ru/mcp-usage`
 - **Архитектура**: `PUBLIC_BITRIX_MCP.md`
+- **Развёртывание с нуля**: `HOWTO.md`
 
 ## Ограничения
 
-- Rate limit: 10 запросов/сек на IP (nginx)
-- Публичный доступ, аутентификация не требуется
+- Rate limit на уровне приложения не настроен (в nginx `limit_req` не используется)
+- Публичный доступ, аутентификация не требуется; `/admin/stats` может требовать `STATS_TOKEN`, если он задан в окружении

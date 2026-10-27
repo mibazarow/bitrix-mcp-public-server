@@ -1,5 +1,5 @@
 [Unit]
-Description=BxMCP Embeddings Service
+Description=BxMCP Embeddings Service (EmbeddingGemma 2)
 After=network.target
 
 [Service]
@@ -7,9 +7,17 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/opt/bitrix-mcp/python
-ExecStart=/opt/bitrix-mcp/python/venv/bin/python -m uvicorn embeddings-service:app --host 127.0.0.1 --port 8000
+ExecStart=/opt/bitrix-mcp/python/venv-gemma2/bin/python -m uvicorn embeddings-service:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
+Environment=EMBEDDING_MODEL=google/embeddinggemma-2
+Environment=EMBEDDING_DIM=256
+Environment=EMBEDDING_MAX_SEQ=512
+Environment=EMBEDDING_THREADS=2
+Environment=EMBEDDING_TEXT_ONLY=1
+Environment=HF_HOME=/root/.cache/huggingface
+Environment=OMP_NUM_THREADS=2
+Environment=TOKENIZERS_PARALLELISM=false
 
 [Install]
 WantedBy=multi-user.target

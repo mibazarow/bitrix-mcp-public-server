@@ -62,7 +62,6 @@ export function listMdFiles(dir: string = CONFIG.docsPath): string[] {
 }
 
 function collectMdFiles(dir: string, baseDir: string, result: { filePath: string; content: string }[]): void {
-function listMdFiles(dir: string = CONFIG.docsPath): string[] {  const files: string[] = [];  const walk = (d: string) => {    try {      const items = readdirSync(d, { withFileTypes: true });      for (const item of items) {        if (item.name.startsWith(".")) continue;        const fullPath = join(d, item.name);        if (item.isDirectory()) {          walk(fullPath);        } else if (item.name.endsWith(".md")) {          files.push(require("path").relative(CONFIG.docsPath, fullPath));        }      }    } catch {}  };  walk(dir);  return files;}
   try {
     const items = readdirSync(dir, { withFileTypes: true });
     for (const item of items) {

@@ -40,12 +40,12 @@ VDS
 │   └── SQLite — /opt/bitrix-mcp/data/index.db
 │
 ├── Embeddings Service (Python, FastAPI, порт 8000)
-│   └── sentence-transformers intfloat/multilingual-e5-small
+│   └── sentence-transformers google/embeddinggemma-2 (text-only, fp32, 256d)
 │
 └── nginx — прокси:
     ├── bxmcp.camouf.ru → localhost:3100 (MCP)
-    ├── camouf.ru/mcp/ → localhost:3100 (основной домен)
-    └── camouf.ru/embed/ → localhost:8000 (embeddings)
+    ├── bxmcp.camouf.ru/embed/ → localhost:8000 (embeddings)
+    └── camouf.ru/mcp-usage, /mcp-stats → localhost:3100/admin/*
 ```
 
 **Ключевое решение**: MCP-сервер читает PHP-файлы непосредственно из установленного Bitrix. Индексы всегда соответствуют реальной версии ядра.
@@ -84,7 +84,16 @@ CREATE TABLE functions (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL
 CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, module_id TEXT NOT NULL, file_path TEXT, line_number INTEGER, fired_in_function TEXT);
 CREATE TABLE classes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, module_id TEXT NOT NULL, file_path TEXT NOT NULL, line_number INTEGER NOT NULL, type TEXT, extends TEXT, implements TEXT, phpdoc TEXT);
 CREATE TABLE doc_chunks (id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT NOT NULL, chunk_index INTEGER NOT NULL, content TEXT NOT NULL, embedding BLOB);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- подпись индекса эмбеддингов
 ```
+
+`embedding` — BLOB из `dim` × 4 байт (little-endian float32). Размерность задаётся
+`EMBEDDING_DIM` (сейчас 256) и проверяется при загрузке кэша и при дисковом поиске:
+записи другой длины отбрасываются, а не сравниваются вслепую.
+
+`meta.embeddings_signature` = `<модель>@<размерность>` (например
+`google/embeddinggemma-2@256`). Несовпадение с текущей конфигурацией означает
+полный пересчёт `doc_chunks` при следующей индексации.
 
 ### 3. Документация
 
@@ -94,30 +103,45 @@ git clone --depth 1 https://github.com/bitrix-tools/framework-docs.git /opt/bitr
 
 MCP resources: `bx-docs://list` (дерево), `bx-docs://{path}` (содержимое .md файла).
 
-Embeddings-пайплайн: .md → чанки по заголовкам (~500 токенов) → embedding (Python-сервис) → SQLite. Поиск: cosine similarity.
+Embeddings-пайплайн: .md → чанки по заголовкам (≤1500 символов) → embedding (Python-сервис,
+профиль `docs_passage`) → SQLite. Поиск: cosine similarity по 256-мерным векторам,
+запрос кодируется профилем `docs_query`.
+
+Индексация **инкрементальная**: чанк с неизменившимся содержимым не пересчитывается,
+исчезнувшие чанки удаляются. Полный пересчёт — только при смене подписи индекса.
 
 ### 4. Embeddings-сервис (Python)
 
-```python
-from fastapi import FastAPI
-from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
+Модель — **`google/embeddinggemma-2`**, Apache 2.0. Грузится в text-only режиме:
+`config_kwargs={"vision_config": None, "audio_config": None}` — в памяти 270M-бэкбон
+вместо всех 740M.
 
-app = FastAPI()
-model = SentenceTransformer('intfloat/multilingual-e5-small')
+Ограничения, зашитые в конфиг:
 
-class EmbeddingRequest(BaseModel):
-    text: str
+- **только fp32** — в `float16` модель возвращает NaN или молча деградирует;
+- `max_seq_length = 512` — окно модели 8K, но чанки ≤1500 символов (~380 токенов),
+  ограничение защищает от патологических входов;
+- `EMBEDDING_THREADS = 2` — оптимум для 2 vCPU, больше потоков даёт оверхед;
+- CPU-сборка torch (`+cpu`), иначе pip притянет CUDA-колёса на 5 GB без пользы.
 
-@app.post("/embed")
-def embed(request: EmbeddingRequest):
-    vec = model.encode(request.text, normalize_embeddings=True)
-    return {"embedding": vec.tolist()}
+Сервис общий для нескольких потребителей: профиль задаёт обязательный для этой
+модели task-префикс и размерность (MRL: 128/256/512/768).
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-```
+| Профиль | Префикс | Потребитель |
+|---|---|---|
+| `docs_query` | `task: search result \| query: ` | `searchDocs` |
+| `docs_passage` | `title: none \| text: ` | индексация документации |
+| `site_query` / `site_passage` | те же | BXADMIN-S (индекс сайта) |
+| `code_query` | `task: code retrieval \| query: ` | поиск по коду |
+| `generic` | без префикса | служебное |
+
+Эндпоинты: `POST /embed`, `POST /embed/batch` (до 32 текстов), `GET /health`,
+`GET /profiles`. Кодирование сериализовано мьютексом — параллельные вызовы
+не конкурируют за два ядра.
+
+Производительность на 2 vCPU Sandy Bridge: ~0.45 s на короткий запрос,
+~2.6 s на чанк 1500 символов. Полная переиндексация 5581 чанка — ~3 часа,
+ежедневная инкрементальная — секунды.
 
 ### 5. MCP-сервер (TypeScript)
 
@@ -125,6 +149,7 @@ def health():
 /opt/bitrix-mcp/
 ├── src/
 │   ├── index.ts                 # точка входа, Express + StreamableHTTP
+│   ├── analytics.ts             # статистика использования (SQLite)
 │   ├── liveapi/
 │   │   ├── indexer.ts           # обход PHP-файлов, парсинг
 │   │   ├── storage.ts           # SQLite: запись/чтение
@@ -142,15 +167,17 @@ def health():
 ├── dist/                        # скомпилированный JS
 ├── data/
 │   ├── docs/                    # git clone framework-docs
-│   └── index.db                 # SQLite (~90 MB)
+│   ├── index.db                 # SQLite-индекс (~500 MB)
+│   └── analytics.db             # SQLite-статистика
 ├── scripts/
-│   ├── reindex.sh               # cron: каждый час
-│   └── update-docs.sh           # cron: ежедневно в 3:00
+│   ├── reindex.sh               # cron: ежедневно в 1:00
+│   └── update-docs.sh           # cron: ежедневно в 4:00
 └── python/
-    └── embeddings-service.py    # FastAPI
+    ├── embeddings-service.py    # FastAPI
+    └── requirements.txt
 ```
 
-## Инструменты MCP (21 шт.)
+## Инструменты MCP (24 шт.)
 
 ### Модули и структура
 | Инструмент | Описание |
@@ -160,8 +187,16 @@ def health():
 | `liveApiGetModuleClasses` | Классы модуля (курсорная пагинация) |
 | `liveApiGetModuleEvents` | События модуля |
 | `liveApiGetAllEvents` | Все события всех модулей |
+| `liveApiGetEventHandler` | Обработчики конкретного события |
 | `liveApiGetModuleStructure` | Файловый путь модуля |
 | `liveApiGetModuleDependencies` | Зависимости модуля |
+
+### Компоненты и ORM
+| Инструмент | Описание |
+|---|---|
+| `liveApiListComponents` | Проиндексированные компоненты (`comp:<namespace>:<name>`) |
+| `liveApiListDataManagers` | DataManager-классы ORM |
+| `liveApiGetEntityFields` | Поля ORM-сущности из `getMap()` |
 
 ### Поиск по коду
 | Инструмент | Описание |
@@ -182,99 +217,45 @@ def health():
 | `liveApiGetClassConstantValue` | Значение константы из исходников |
 | `liveApiGetClassHierarchy` | extends/implements |
 
-### Документация и окружение
+### Документация
 | Инструмент | Описание |
 |---|---|
 | `liveApiGetDocResource` | Файл документации по пути |
 | `searchDocs` | Семантический поиск по документации |
-| `envInfo` | Информация об окружении |
 
 ## nginx
 
-```nginx
-# /etc/nginx/conf.d/ratelimit.conf
-limit_req_zone $binary_remote_addr zone=mcp:10m rate=10r/s;
+Актуальная конфигурация — [`src/nginx-camouf.ru.conf`](src/nginx-camouf.ru.conf):
 
-# /etc/nginx/sites-enabled/camouf.ru.conf
-
-# Основной домен — Bitrix CMS
-# server_name camouf.ru;
-location /mcp/ {
-    rewrite ^/mcp(/.*)$ $1 break;
-    proxy_pass http://127.0.0.1:3100;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host $host;
-    proxy_read_timeout 86400s;
-    proxy_buffering off;
-    proxy_cache off;
-    limit_req zone=mcp burst=20 nodelay;
-}
-
-location /embed/ {
-    rewrite ^/embed(/.*)$ $1 break;
-    proxy_pass http://127.0.0.1:8000;
-}
-
-# Поддомен bxmcp.camouf.ru
-# server { listen 443 ssl; server_name bxmcp.camouf.ru;
-#     ssl_certificate ...;
-#     location / { proxy_pass http://127.0.0.1:3100; ... }
-#     location /embed/ { rewrite ^/embed(/.*)$ $1 break; proxy_pass http://127.0.0.1:8000; }
-# }
-```
+- `bxmcp.camouf.ru` → `127.0.0.1:3100` (MCP в корне), `/embed/` → `127.0.0.1:8000`
+- `camouf.ru` → apache (`127.0.0.1:8090`), плюс `/mcp-usage` и `/mcp-stats` → `127.0.0.1:3100/admin/*`
+- `limit_req` не используется
 
 ## systemd
 
-```ini
-# /etc/systemd/system/bxmcp.service
-[Unit]
-Description=BxMCP Server
-After=network.target bxmcp-embeddings.service
-Requires=bxmcp-embeddings.service
+Актуальные unit-файлы — [`src/bxmcp.service`](src/bxmcp.service) и [`src/bxmcp-embeddings.service`](src/bxmcp-embeddings.service):
 
-[Service]
-User=bitrix
-Group=bitrix
-WorkingDirectory=/opt/bitrix-mcp
-ExecStart=/usr/bin/node dist/index.js
-Restart=always
-RestartSec=5
-Environment=NODE_ENV=production
-Environment=BITRIX_PATH=/home/bitrix/ext_www/camouf.ru/bitrix/modules
-Environment=EMBEDDINGS_URL=http://127.0.0.1:8000
-Environment=PORT=3100
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```ini
-# /etc/systemd/system/bxmcp-embeddings.service
-[Unit]
-Description=BxMCP Embeddings Service
-After=network.target
-
-[Service]
-User=bitrix
-Group=bitrix
-WorkingDirectory=/opt/bitrix-mcp/python
-ExecStart=/opt/bitrix-mcp/python/venv/bin/python -m uvicorn embeddings-service:app --host 127.0.0.1 --port 8000
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+- `bxmcp.service` — `User=root`, `ExecStart=/usr/local/bin/bxmcp-node /opt/bitrix-mcp/dist/index.js`, `PORT=3100`,
+  `EMBEDDING_DIM=256`, `EMBEDDING_MODEL=google/embeddinggemma-2`
+- `bxmcp-embeddings.service` — uvicorn на `127.0.0.1:8000` из `/opt/bitrix-mcp/python/venv-gemma2`
 
 ## cron
 
+Актуальное расписание — [`src/cron-bxmcp`](src/cron-bxmcp) (`/etc/cron.d/bxmcp`):
+
 ```bash
-# /etc/cron.d/bxmcp
-0 * * * * bitrix /opt/bitrix-mcp/scripts/reindex.sh        # каждый час
-0 3 * * * bitrix /opt/bitrix-mcp/scripts/update-docs.sh    # ежедневно в 3:00
+0 1 * * * root /opt/bitrix-mcp/scripts/reindex.sh >> /var/log/bxmcp-reindex.log 2>&1
+0 4 * * * root /opt/bitrix-mcp/scripts/update-docs.sh >> /var/log/bxmcp-docs.log 2>&1
 ```
+
+`reindex.sh` запускает переиндексацию только если mtime `.php` новее маркера
+`data/last_reindex`. Когда запускает — индексирует **полностью** (`clearModuleData`
+по каждому модулю), ~11 минут на 53 модуля и 918 компонентов. Проверка реагирует
+на новые и изменённые файлы; удаление модуля без изменения соседних файлов детектор
+не увидит (лечится ручным `POST /admin/reindex`).
+
+Индексация документации, наоборот, инкрементальная: неизменные чанки пропускаются,
+исчезнувшие удаляются. Полный пересчёт — только при смене подписи индекса.
 
 ## Подключение клиентов
 
@@ -307,13 +288,13 @@ curl -s -X POST https://bxmcp.camouf.ru/ \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"liveApiListModules","arguments":{}}}'
 ```
 
-## Статус реализации (25.04.2026)
+## Статус реализации (27.10.2026)
 
 - [x] MCP-сервер на Express + `StreamableHTTPServerTransport` (SDK 1.29.0)
 - [x] Индексация 53 модулей Bitrix, ~333 MB SQLite
-- [x] **21 инструмент** MCP (LiveAPI: модули, функции, классы, события, константы, неймспейсы + searchDocs + envInfo)
+- [x] **24 инструмента** MCP (LiveAPI: модули, функции, классы, события, константы, неймспейсы, компоненты, ORM + searchDocs)
 - [x] MCP resources: `bx-docs://` (109 ресурсов)
-- [x] Embeddings-сервис (Python, FastAPI, `intfloat/multilingual-e5-small`)
+- [x] Embeddings-сервис (Python, FastAPI, `google/embeddinggemma-2`, text-only, fp32, 256d, профили)
 - [x] Stateless-режим — клиенту не нужны initialize/sessionId
 - [x] Исправлена ошибка `ERR_HTTP_HEADERS_SENT` при множественных вызовах инструментов
 - [x] nginx-прокси: `bxmcp.camouf.ru` и `camouf.ru/mcp/`

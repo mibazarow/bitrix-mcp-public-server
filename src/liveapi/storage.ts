@@ -6,6 +6,57 @@ import type { ParsedFunction, ParsedClass, ParsedEvent, ParsedConstant, Function
 
 let db: Database.Database;
 
+const EMBEDDING_DIM = CONFIG.embeddingDim;
+let embeddingsCache: Float32Array | null = null;
+let embeddingsMetadata: { filePath: string; chunkIndex: number; text: string }[] = [];
+let skippedEmbeddings = 0;
+
+export function loadEmbeddingsCache(): void {
+  const rows = getDb().prepare(
+    "SELECT file_path, chunk_index, content, embedding FROM doc_chunks WHERE embedding IS NOT NULL ORDER BY id"
+  ).all() as any[];
+
+  if (rows.length === 0) {
+    embeddingsCache = null;
+    embeddingsMetadata = [];
+    return;
+  }
+
+  const expectedBytes = EMBEDDING_DIM * 4;
+  const usable = rows.filter((row: any) => row.embedding && row.embedding.length === expectedBytes);
+  skippedEmbeddings = rows.length - usable.length;
+  if (skippedEmbeddings > 0) {
+    console.warn(
+      `[storage] ${skippedEmbeddings} doc chunk embeddings skipped: expected ${expectedBytes} bytes, ` +
+        `found other sizes. Run POST /admin/reindex-docs to rebuild.`
+    );
+  }
+
+  const totalFloats = usable.length * EMBEDDING_DIM;
+  embeddingsCache = new Float32Array(totalFloats);
+  embeddingsMetadata = new Array(usable.length);
+
+  for (let i = 0; i < usable.length; i++) {
+    const row = usable[i];
+    const emb = new Float32Array(new Uint8Array(row.embedding).buffer);
+    embeddingsCache.set(emb, i * EMBEDDING_DIM);
+    embeddingsMetadata[i] = {
+      filePath: row.file_path,
+      chunkIndex: row.chunk_index,
+      text: row.content,
+    };
+  }
+}
+
+export function getSkippedEmbeddings(): number {
+  return skippedEmbeddings;
+}
+
+function invalidateEmbeddingsCache(): void {
+  embeddingsCache = null;
+  embeddingsMetadata = [];
+}
+
 export function initDb(): void {
   db = new Database(CONFIG.dbPath);
   db.pragma("journal_mode = WAL");
@@ -66,6 +117,13 @@ export function initDb(): void {
       content TEXT NOT NULL,
       embedding BLOB
     );
+
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_doc_chunks_path ON doc_chunks (file_path, chunk_index);
 
     CREATE TABLE IF NOT EXISTS class_constants (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,7 +226,11 @@ export function clearModuleData(moduleId: string): void {
 }
 
 export function listModules(): { id: string; name: string; version: string }[] {
-  return getDb().prepare("SELECT id, name, version FROM modules ORDER BY name").all() as any[];
+  return getDb().prepare("SELECT id, name, version FROM modules WHERE id NOT LIKE 'comp:%' ORDER BY name").all() as any[];
+}
+
+export function listComponents(): { id: string; name: string; version: string; path: string }[] {
+  return getDb().prepare("SELECT id, name, version, path FROM modules WHERE id LIKE 'comp:%' ORDER BY name").all() as any[];
 }
 
 export function getModuleFunctions(moduleId: string, limit: number, offset: number): { functions: any[]; total: number } {
@@ -327,33 +389,218 @@ export function insertDocChunk(filePath: string, chunkIndex: number, content: st
   getDb().prepare(
     "INSERT INTO doc_chunks (file_path, chunk_index, content, embedding) VALUES (?, ?, ?, ?)"
   ).run(filePath, chunkIndex, content, embedding);
+  invalidateEmbeddingsCache();
 }
 
 export function clearDocChunks(): void {
   getDb().prepare("DELETE FROM doc_chunks").run();
+  invalidateEmbeddingsCache();
+}
+
+export function getDocChunkContents(): Map<string, string> {
+  const rows = getDb().prepare("SELECT file_path, chunk_index, content FROM doc_chunks").all() as any[];
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    map.set(chunkKey(row.file_path, row.chunk_index), row.content);
+  }
+  return map;
+}
+
+export function replaceDocChunk(filePath: string, chunkIndex: number, content: string, embedding: Buffer | null): void {
+  const db = getDb();
+  db.prepare("DELETE FROM doc_chunks WHERE file_path = ? AND chunk_index = ?").run(filePath, chunkIndex);
+  db.prepare(
+    "INSERT INTO doc_chunks (file_path, chunk_index, content, embedding) VALUES (?, ?, ?, ?)"
+  ).run(filePath, chunkIndex, content, embedding);
+  invalidateEmbeddingsCache();
+}
+
+export function deleteDocChunk(filePath: string, chunkIndex: number): void {
+  getDb().prepare("DELETE FROM doc_chunks WHERE file_path = ? AND chunk_index = ?").run(filePath, chunkIndex);
+  invalidateEmbeddingsCache();
+}
+
+export function getMeta(key: string): string | null {
+  const row = getDb().prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined;
+  return row ? row.value : null;
+}
+
+export function setMeta(key: string, value: string): void {
+  getDb().prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .run(key, value);
+}
+
+export function chunkKey(filePath: string, chunkIndex: number): string {
+  return filePath + "\u0000" + chunkIndex;
 }
 
 export function searchDocChunks(queryEmbedding: Float32Array, limit: number = 10): any[] {
+  if (!embeddingsCache || embeddingsMetadata.length === 0) {
+    return fallbackDiskSearch(queryEmbedding, limit);
+  }
+
+  const dim = EMBEDDING_DIM;
+  const n = embeddingsMetadata.length;
+  const scores: { index: number; score: number }[] = new Array(n);
+
+  for (let i = 0; i < n; i++) {
+    let dot = 0;
+    const offset = i * dim;
+    for (let j = 0; j < dim; j++) {
+      dot += queryEmbedding[j] * embeddingsCache[offset + j];
+    }
+    scores[i] = { index: i, score: dot };
+  }
+
+  scores.sort((a, b) => b.score - a.score);
+
+  return scores.slice(0, limit).map(s => ({
+    filePath: embeddingsMetadata[s.index].filePath,
+    chunkIndex: embeddingsMetadata[s.index].chunkIndex,
+    text: embeddingsMetadata[s.index].text,
+    score: s.score,
+  }));
+}
+
+function fallbackDiskSearch(queryEmbedding: Float32Array, limit: number): any[] {
   const rows = getDb().prepare(
     "SELECT id, file_path as filePath, chunk_index as chunkIndex, content, embedding FROM doc_chunks WHERE embedding IS NOT NULL"
   ).all() as any[];
 
-  const scored = rows.map((row: any) => {
-    const emb = new Float32Array(new Uint8Array(row.embedding).buffer);
-    const score = cosineSimilarity(queryEmbedding, emb);
-    return { filePath: row.filePath, chunkIndex: row.chunkIndex, text: row.content, score };
-  });
+  const expectedBytes = queryEmbedding.length * 4;
+  const scored = rows
+    .filter((row: any) => row.embedding && row.embedding.length === expectedBytes)
+    .map((row: any) => {
+      const emb = new Float32Array(new Uint8Array(row.embedding).buffer);
+      const score = dotProduct(queryEmbedding, emb);
+      return { filePath: row.filePath, chunkIndex: row.chunkIndex, text: row.content, score };
+    });
 
   scored.sort((a: any, b: any) => b.score - a.score);
   return scored.slice(0, limit);
 }
 
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  let dot = 0, normA = 0, normB = 0;
+function dotProduct(a: Float32Array, b: Float32Array): number {
+  let dot = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
   }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  return dot;
+}
+
+export function listDataManagers(moduleId?: string): any[] {
+  const like = '%DataManager%';
+  if (moduleId) {
+    return getDb().prepare(
+      `SELECT name, full_name as fullName, module_id as moduleId, file_path as filePath,
+              line_number as lineNumber, namespace, phpdoc
+       FROM classes
+       WHERE (extends LIKE ? OR name LIKE ?) AND module_id = ? AND type = 'class'
+       ORDER BY name LIMIT 100`
+    ).all(like, like, moduleId);
+  }
+  return getDb().prepare(
+    `SELECT name, full_name as fullName, module_id as moduleId, file_path as filePath,
+            line_number as lineNumber, namespace, phpdoc
+     FROM classes
+     WHERE (extends LIKE ? OR name LIKE ?) AND type = 'class'
+     ORDER BY name LIMIT 500`
+  ).all(like, like);
+}
+
+export function getEntityFields(className: string, moduleId: string): any[] {
+  const row = getDb().prepare(
+    "SELECT file_path as filePath FROM classes WHERE name = ? AND module_id = ? AND type = 'class' LIMIT 1"
+  ).get(className, moduleId) as any;
+  if (!row || !existsSync(row.filePath)) return [];
+
+  const content = readFileSync(row.filePath, "utf-8");
+  const fields: any[] = [];
+
+  const getMapBody = extractGetMapBody(content);
+  if (!getMapBody) return fields;
+
+  const fieldRe = /new\s+(?:\\?(?:Bitrix\\Main\\ORM\\Fields|Entity)\\)?(\w+Field)\s*\(\s*'([^']+)'/g;
+  let match: RegExpExecArray | null;
+  while ((match = fieldRe.exec(getMapBody)) !== null) {
+    const type = match[1];
+    const name = match[2];
+
+    const argStart = match.index + match[0].length;
+    let argEnd = argStart;
+    let depth = 0;
+    for (let i = argStart; i < getMapBody.length; i++) {
+      const ch = getMapBody[i];
+      if (ch === '(') depth++;
+      else if (ch === ')') {
+        if (depth === 0) { argEnd = i + 1; break; }
+        depth--;
+      }
+      argEnd = i + 1;
+    }
+
+    const argsStr = getMapBody.substring(argStart, argEnd).trim();
+    let options: any = {};
+    if (argsStr.startsWith('[')) {
+      try {
+        const optMatch = argsStr.match(/\[([\s\S]*?)\]/);
+        if (optMatch) {
+          const optStr = optMatch[1];
+          const optRe = /'(\w+)'\s*=>\s*([^,\]]+)/g;
+          let om: RegExpExecArray | null;
+          while ((om = optRe.exec(optStr)) !== null) {
+            const val = om[2].trim();
+            options[om[1]] = val === 'true' ? true : val === 'false' ? false : val;
+          }
+        }
+      } catch {}
+    }
+
+    fields.push({ name, type, options });
+  }
+
+  const chainRe = /\(new\s+(?:\\?(?:Bitrix\\Main\\ORM\\Fields|Entity)\\)?(\w+Field)\s*\(\s*'([^']+)'[\s\S]*?\)\s*\)/g;
+  chainRe.lastIndex = 0;
+  while ((match = chainRe.exec(getMapBody)) !== null) {
+    const type = match[1];
+    const name = match[2];
+    if (!fields.some(f => f.name === name && f.type === type)) {
+      fields.push({ name, type, options: {} });
+    }
+  }
+
+  return fields;
+}
+
+function extractGetMapBody(content: string): string | null {
+  const methodRe = /function\s+getMap\s*\([\s\S]*?\)\s*\{/;
+  const methodMatch = methodRe.exec(content);
+  if (!methodMatch) return null;
+
+  const bodyStart = methodMatch.index + methodMatch[0].length;
+  let depth = 1;
+  let bodyEnd = bodyStart;
+  for (let i = bodyStart; i < content.length; i++) {
+    if (content[i] === '{') depth++;
+    else if (content[i] === '}') {
+      depth--;
+      if (depth === 0) { bodyEnd = i; break; }
+    }
+  }
+  return content.substring(bodyStart, bodyEnd);
+}
+
+export function getEventHandlers(eventName?: string): any[] {
+  if (eventName) {
+    return getDb().prepare(
+      `SELECT name, module_id as moduleId, file_path as filePath,
+              line_number as lineNumber, fired_in_function as firedInFunc
+       FROM events WHERE name = ? ORDER BY module_id, file_path`
+    ).all(eventName);
+  }
+  return getDb().prepare(
+    `SELECT name, module_id as moduleId, file_path as filePath,
+            line_number as lineNumber, fired_in_function as firedInFunc
+     FROM events ORDER BY name LIMIT 200`
+  ).all();
 }

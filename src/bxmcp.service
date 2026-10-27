@@ -14,6 +14,8 @@ Environment=NODE_ENV=production
 Environment=BITRIX_PATH=/home/bitrix/ext_www/camouf.ru/bitrix/modules
 Environment=EMBEDDINGS_URL=http://127.0.0.1:8000
 Environment=PORT=3100
+Environment=EMBEDDING_DIM=256
+Environment=EMBEDDING_MODEL=google/embeddinggemma-2
 
 [Install]
 WantedBy=multi-user.target

@@ -1,6 +1,27 @@
+# dependencies
 node_modules/
+
+# build output
 dist/
-data/index.db*
-data/docs/
+*.tsbuildinfo
+
+# local data, indexes and docs clone
+data/
+
+# python
+__pycache__/
+*.pyc
+venv/
+venv-*/
+.venv/
+
+# env & logs
 .env
+.env.*
 *.log
+
+# editor / OS
+.DS_Store
+*.bak
+*.orig
+*.rej

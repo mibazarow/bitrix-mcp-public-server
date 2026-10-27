@@ -18,7 +18,7 @@
 - Транспорт: Streamable HTTP (MCP spec 2025-03-26)
 - `Express` на порту 3100, nginx-прокси с rate limiting
 - SQLite (`better-sqlite3`) — индекс функций, классов, событий, чанков документации
-- Python-сервис embeddings (`sentence-transformers intfloat/multilingual-e5-small`)
+- Python-сервис embeddings (`sentence-transformers google/embeddinggemma-2`)
 - systemd: `bxmcp` + `bxmcp-embeddings`
 - Cron: автоиндексация (ежечасно) + обновление docs (ежедневно)
 
@@ -509,7 +509,7 @@ After=network.target
 User=bitrix
 Group=bitrix
 WorkingDirectory=/opt/b24mcp/python
-ExecStart=/opt/b24mcp/python/venv/bin/python -m uvicorn embeddings-service:app --host 127.0.0.1 --port 8000
+ExecStart=/opt/b24mcp/python/venv-gemma2/bin/python -m uvicorn embeddings-service:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 
@@ -630,4 +630,4 @@ WantedBy=multi-user.target
 - MCP SDK: https://github.com/modelcontextprotocol/typescript-sdk
 - MCP Specification 2025-03-26: https://spec.modelcontextprotocol.io/
 - Репозиторий framework-docs: https://github.com/bitrix-tools/framework-docs
-- sentence-transformers multilingual-e5-small: https://huggingface.co/intfloat/multilingual-e5-small
+- sentence-transformers EmbeddingGemma 2: https://huggingface.co/google/embeddinggemma-2
