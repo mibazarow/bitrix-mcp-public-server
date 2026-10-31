@@ -1,14 +1,20 @@
-# Публичный MCP-сервер для Bitrix Framework
+# Архитектура BxMCP
 
-## Исходные данные
+Документ описывает устройство сервера и схему данных. Публичной инсталляции больше нет:
+каждый разворачивает свой экземпляр по [HOWTO.md](HOWTO.md).
+
+## Референсная инсталляция
+
+Ниже — конфигурация, на которой проект разрабатывался и проверялся. Значения приведены
+как пример; в своей установке вы подставляете свои.
 
 | Параметр | Значение |
 |----------|----------|
-| Домен | `camouf.ru` (Bitrix), `bxmcp.camouf.ru` (MCP) |
+| Домен | пример: `example.ru` (Bitrix), `mcp.example.ru` (MCP) |
 | Сервер | VDS, Ubuntu 22.04 |
-| Путь к Bitrix | `/home/bitrix/ext_www/camouf.ru` |
+| Путь к Bitrix | `/home/bitrix/ext_www/example.ru` |
 | MCP сервер | Node.js/TypeScript, порт 3100 |
-| Доступ | Публичный, без аутентификации |
+| Доступ | публичный в референсе; для своей установки решайте сами |
 | SDK | `@modelcontextprotocol/sdk` v1.29.0 |
 
 ## Задача
@@ -22,7 +28,7 @@ MCP-сервер, предоставляющий AI-агентам (Cursor, PhpS
 
 **Требования:**
 - Полностью свой код, своя архитектура (не модуль для Bitrix)
-- Публичный — любой может подключиться без токена
+- Аутентификации в самом сервере нет — доступ ограничивается на уровне сети/nginx
 - Источник PHP-кода для LiveAPI — установленный на этом же сервере Bitrix
 - Embeddings-сервис на Python (sentence-transformers) для семантического поиска
 
@@ -43,9 +49,9 @@ VDS
 │   └── sentence-transformers google/embeddinggemma-2 (text-only, fp32, 256d)
 │
 └── nginx — прокси:
-    ├── bxmcp.camouf.ru → localhost:3100 (MCP)
-    ├── bxmcp.camouf.ru/embed/ → localhost:8000 (embeddings)
-    └── camouf.ru/mcp-usage, /mcp-stats → localhost:3100/admin/*
+    ├── mcp.example.ru → localhost:3100 (MCP)
+    ├── mcp.example.ru/embed/ → localhost:8000 (embeddings)
+    └── example.ru/mcp-usage, /mcp-stats → localhost:3100/admin/*
 ```
 
 **Ключевое решение**: MCP-сервер читает PHP-файлы непосредственно из установленного Bitrix. Индексы всегда соответствуют реальной версии ядра.
@@ -227,8 +233,8 @@ Embeddings-пайплайн: .md → чанки по заголовкам (≤15
 
 Актуальная конфигурация — [`src/nginx-camouf.ru.conf`](src/nginx-camouf.ru.conf):
 
-- `bxmcp.camouf.ru` → `127.0.0.1:3100` (MCP в корне), `/embed/` → `127.0.0.1:8000`
-- `camouf.ru` → apache (`127.0.0.1:8090`), плюс `/mcp-usage` и `/mcp-stats` → `127.0.0.1:3100/admin/*`
+- `mcp.example.ru` → `127.0.0.1:3100` (MCP в корне), `/embed/` → `127.0.0.1:8000`
+- `example.ru` → ваш веб-сервер (в референсе apache на `127.0.0.1:8090`), плюс `/mcp-usage` и `/mcp-stats` → `127.0.0.1:3100/admin/*`
 - `limit_req` не используется
 
 ## systemd
@@ -264,7 +270,7 @@ Embeddings-пайплайн: .md → чанки по заголовкам (≤15
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://bxmcp.camouf.ru"]
+      "args": ["-y", "mcp-remote", "http://127.0.0.1:3100"]
     }
   }
 }
@@ -276,13 +282,13 @@ Embeddings-пайплайн: .md → чанки по заголовкам (≤15
 
 ```bash
 # tools/list
-curl -s -X POST https://bxmcp.camouf.ru/ \
+curl -s -X POST http://127.0.0.1:3100/ \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 
 # tools/call
-curl -s -X POST https://bxmcp.camouf.ru/ \
+curl -s -X POST http://127.0.0.1:3100/ \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"liveApiListModules","arguments":{}}}'
@@ -297,7 +303,7 @@ curl -s -X POST https://bxmcp.camouf.ru/ \
 - [x] Embeddings-сервис (Python, FastAPI, `google/embeddinggemma-2`, text-only, fp32, 256d, профили)
 - [x] Stateless-режим — клиенту не нужны initialize/sessionId
 - [x] Исправлена ошибка `ERR_HTTP_HEADERS_SENT` при множественных вызовах инструментов
-- [x] nginx-прокси: `bxmcp.camouf.ru` и `camouf.ru/mcp/`
+- [x] nginx-прокси: поддомен MCP и пути `/mcp-usage`, `/mcp-stats` на основном домене
 - [x] systemd: `bxmcp` + `bxmcp-embeddings`
 - [x] Cron: автоиндексация (каждый час) + обновление docs (ежедневно)
 - [x] Логирование (pino), graceful shutdown, rate limiting, fail2ban

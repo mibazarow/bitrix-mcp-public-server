@@ -1,7 +1,8 @@
 # HOWTO: развёртывание BxMCP с нуля
 
-Пошаговая инструкция, чтобы поднять сервер на чистой машине и получить ровно ту
-конфигурацию, которая работает на `bxmcp.camouf.ru`.
+Пошаговая инструкция, чтобы поднять сервер на чистой машине: локально на машине
+разработчика или на сервере рядом с Bitrix. Все шаги проверены в реальной эксплуатации.
+Сервер можно оставить внутренним (`127.0.0.1:3100`) или опубликовать через nginx — см. §8.
 
 ## Требования к серверу
 
@@ -266,11 +267,11 @@ exec node "$@"
 
 ## 8. nginx
 
-Готовый конфиг — `src/nginx-camouf.ru.conf`, копируется в
-`/etc/nginx/sites-available/camouf.ru.conf` и включается симлинком в `sites-enabled`.
+Готовый конфиг — `src/nginx-camouf.ru.conf` (шаблон: замените домены на свои), копируется в
+`/etc/nginx/sites-available/bxmcp.conf` и включается симлинком в `sites-enabled`.
 
-- `bxmcp.camouf.ru` → `127.0.0.1:3100` (MCP в корне), `/embed/` → `127.0.0.1:8000`
-- `camouf.ru` → apache (`127.0.0.1:8090`), плюс `/mcp-usage` и `/mcp-stats` → `127.0.0.1:3100/admin/*`
+- `mcp.example.ru` → `127.0.0.1:3100` (MCP в корне), `/embed/` → `127.0.0.1:8000`
+- `example.ru` → ваш веб-сервер (в референсе apache на `127.0.0.1:8090`), плюс `/mcp-usage` и `/mcp-stats` → `127.0.0.1:3100/admin/*`
 - `limit_req` не используется
 
 ```bash
@@ -281,7 +282,7 @@ SSL:
 
 ```bash
 apt install -y certbot python3-certbot-nginx
-certbot --nginx -d camouf.ru -d bxmcp.camouf.ru
+certbot --nginx -d example.ru -d mcp.example.ru
 ```
 
 ## 9. Индексация PHP-файлов Bitrix
@@ -371,15 +372,16 @@ curl -s -X POST http://127.0.0.1:3100/ \
 ```bash
 curl -s http://127.0.0.1:8000/health | python3 -m json.tool   # модель, профили, счётчики
 curl -s http://127.0.0.1:3100/health | python3 -m json.tool   # версия + подпись индекса
-curl -s https://bxmcp.camouf.ru/health
 ```
+
+Если сервер опубликован через nginx, тот же `/health` доступен по вашему домену.
 
 `/health` у bxmcp отдаёт блок `embeddings` — модель, размерность и подпись. Если
 `signature` не совпадает с тем, что в БД, нужна переиндексация.
 
 ```bash
 # tools/list
-curl -s -X POST https://bxmcp.camouf.ru/ \
+curl -s -X POST http://127.0.0.1:3100/ \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
@@ -412,11 +414,14 @@ ignoreregex =
 
 ## 14. Подключение клиентов
 
+Адрес замените на свой: `http://127.0.0.1:3100` для локальной установки или
+`https://ваш-домен` для опубликованного сервера.
+
 ```json
 {
   "mcpServers": {
     "bitrix": {
-      "url": "https://bxmcp.camouf.ru/mcp"
+      "url": "http://127.0.0.1:3100/mcp"
     }
   }
 }
@@ -429,7 +434,7 @@ ignoreregex =
   "mcpServers": {
     "bitrix": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://bxmcp.camouf.ru"]
+      "args": ["-y", "mcp-remote", "http://127.0.0.1:3100"]
     }
   }
 }
